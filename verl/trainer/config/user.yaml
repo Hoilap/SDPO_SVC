@@ -2,7 +2,7 @@ defaults:
   - _self_
 
 vars:
-  dir: /users/${oc.env:USER}/SDPO
+  dir: /users/dengkn/SDPO_SVC
   task: ${oc.env:TASK}
   log_dir: /users/${oc.env:USER}/output
   ckpt_dir: /capstor/scratch/cscs/${oc.env:USER}/ttrl_runs/${vars.task}
@@ -44,7 +44,7 @@ algorithm:
   use_kl_in_reward: False
 
 custom_reward_function:
-  path: /users/${oc.env:USER}/SDPO/verl/utils/reward_score/feedback/__init__.py
+  path: /users/dengkn/SDPO_SVC/verl/utils/reward_score/feedback/__init__.py
 
 critic:
   model:
