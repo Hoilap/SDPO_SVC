@@ -42,7 +42,7 @@ CL_PREPARTITIONED_DATASETS=(
 #   science: GPQA
 #   tool:    no extra benchmark; use datasets/tooluse/test.parquet
 CL_EXTERNAL_EVAL_GROUPS=(
-    "datasets/cl/math/aime24|datasets/cl/math/aime25|datasets/cl/math/math500"
+    "datasets/cl/math/aime24|datasets/cl/math/aime25/test.jsonl|datasets/cl/math/math500"
     "datasets/cl/science/gpqa"
     ""
     "datasets/cl/code/LiveCodeBench-v6"

@@ -118,39 +118,25 @@ run_command() {
 }
 
 # Appends evaluation parquet files to EXTERNAL_EVAL_FILES.  External benchmarks
-# are never used as train files.  A raw JSON benchmark must have a preprocessed
-# sibling parquet with the same basename.
+# are never used as train files.  Parquet, JSON, and JSONL eval files are all
+# accepted directly by RLHFDataset.
 resolve_external_eval_files() {
     local eval_path="$1"
-    local eval_file candidate sibling initial_count
+    local eval_file candidate initial_count
     initial_count="${#EXTERNAL_EVAL_FILES[@]}"
 
     if [[ -f "$eval_path" ]]; then
         case "$eval_path" in
-            *.parquet)
+            *.parquet|*.json|*.jsonl)
                 EXTERNAL_EVAL_FILES+=("$(realpath "$eval_path")")
                 return
-                ;;
-            *.json)
-                sibling="${eval_path%.json}.parquet"
-                if [[ -f "$sibling" ]]; then
-                    EXTERNAL_EVAL_FILES+=("$(realpath "$sibling")")
-                    return
-                fi
-                if [[ "$DRY_RUN" == true ]]; then
-                    EXTERNAL_EVAL_FILES+=("$(realpath -m "$sibling")")
-                    return
-                fi
-                echo "External eval JSON needs a verl-formatted parquet sibling: $sibling" >&2
-                echo "Raw JSON cannot be passed directly to verl data.val_files." >&2
-                exit 1
                 ;;
         esac
     fi
 
     if [[ "$DRY_RUN" == true && ! -e "$eval_path" ]]; then
-        if [[ "$eval_path" == *.json ]]; then
-            EXTERNAL_EVAL_FILES+=("$(realpath -m "${eval_path%.json}.parquet")")
+        if [[ "$eval_path" == *.parquet || "$eval_path" == *.json || "$eval_path" == *.jsonl ]]; then
+            EXTERNAL_EVAL_FILES+=("$(realpath -m "$eval_path")")
         else
             EXTERNAL_EVAL_FILES+=("$(realpath -m "$eval_path/test.parquet")")
         fi
@@ -166,7 +152,10 @@ resolve_external_eval_files() {
     for candidate in \
         "$eval_path/eval.parquet" \
         "$eval_path/validation.parquet" \
-        "$eval_path/test.parquet"; do
+        "$eval_path/test.parquet" \
+        "$eval_path/eval.jsonl" \
+        "$eval_path/validation.jsonl" \
+        "$eval_path/test.jsonl"; do
         if [[ -f "$candidate" ]]; then
             EXTERNAL_EVAL_FILES+=("$(realpath "$candidate")")
             return
@@ -175,11 +164,12 @@ resolve_external_eval_files() {
     while IFS= read -r -d '' eval_file; do
         EXTERNAL_EVAL_FILES+=("$(realpath "$eval_file")")
     done < <(find "$eval_path" -maxdepth 2 -type f \
-        \( -iname '*eval*.parquet' -o -iname '*validation*.parquet' -o -iname '*test*.parquet' \) \
+        \( -iname '*eval*.parquet' -o -iname '*validation*.parquet' -o -iname '*test*.parquet' \
+        -o -iname '*eval*.jsonl' -o -iname '*validation*.jsonl' -o -iname '*test*.jsonl' \) \
         -print0 | sort -z)
 
     if (( ${#EXTERNAL_EVAL_FILES[@]} == initial_count )); then
-        echo "No eval/validation/test parquet found under $eval_path" >&2
+        echo "No eval/validation/test Parquet or JSONL file found under $eval_path" >&2
         exit 1
     fi
 }

@@ -78,7 +78,7 @@ class RLHFDataset(Dataset):
     - Supports resuming from checkpoints.
 
     Args:
-        data_files (str or list): Path(s) to Parquet file(s).
+        data_files (str or list): Path(s) to Parquet, JSON, or JSONL file(s).
         tokenizer (PreTrainedTokenizer): For the tokenization of text to token IDs.
         config (DictConfig): Options like cache_dir, prompt_key, max_prompt_length, truncation, etc.
         processor (ProcessorMixin, optional): Multimodal preprocessor for images/videos.
@@ -156,7 +156,7 @@ class RLHFDataset(Dataset):
             # read files and cache
             if parquet_file.endswith(".parquet"):
                 dataframe = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
-            elif parquet_file.endswith(".json"):
+            elif parquet_file.endswith((".json", ".jsonl")):
                 dataframe = datasets.load_dataset("json", data_files=parquet_file)["train"]
             else:
                 raise ValueError(f"Unsupported file format: {parquet_file}")
