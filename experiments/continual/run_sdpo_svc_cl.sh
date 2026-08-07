@@ -18,14 +18,27 @@
 #
 # Useful overrides:
 #   BASE_MODEL=../models/Qwen3-4B-Instruct TOTAL_EPOCHS=1 \
-#   SVC_DEVICE=cuda:0 bash experiments/continual/run_sdpo_svc_cl.sh
+#   SVC_DEVICE=cuda:0 sbatch experiments/continual/run_sdpo_svc_cl.sh
 #
 # Use --dry-run to validate the task order and print commands without training.
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# sbatch executes a copied script from /var/spool/slurmd/job*/slurm_script, so
+# BASH_SOURCE does not point into the repository inside a batch job.  Slurm's
+# submission directory is the project root for the documented launch command.
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    PROJECT_ROOT="${PROJECT_ROOT:-${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR is not set}}"
+    SCRIPT_DIR="$PROJECT_ROOT/experiments/continual"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+fi
+if [[ ! -f "$SCRIPT_DIR/dataset_manifest.sh" ]]; then
+    echo "Cannot find dataset manifest: $SCRIPT_DIR/dataset_manifest.sh" >&2
+    echo "Submit this script from the repository root, or export PROJECT_ROOT explicitly." >&2
+    exit 2
+fi
 source "$SCRIPT_DIR/dataset_manifest.sh"
 cd "$PROJECT_ROOT"
 
@@ -90,8 +103,8 @@ if (( START_TASK > 0 )) && [[ -z "${INITIAL_CONTINUAL_MODEL:-}" ]]; then
     exit 2
 fi
 if [[ "$DRY_RUN" != true && -z "${SLURM_JOB_ID:-}" ]]; then
-    echo "This script must run on a Slurm-allocated compute node." >&2
-    echo "Allocate one node with 4 GPUs, then run: bash experiments/continual/run_sdpo_svc_cl.sh" >&2
+    echo "This script must be submitted through Slurm." >&2
+    echo "Run: sbatch experiments/continual/run_sdpo_svc_cl.sh" >&2
     exit 2
 fi
 if [[ "$DRY_RUN" != true && -n "${SLURM_GPUS_ON_NODE:-}" \
