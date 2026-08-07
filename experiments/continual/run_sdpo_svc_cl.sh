@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 
 #SBATCH --job-name=sdpo-svc-cl
-#SBATCH --account=a156
 #SBATCH --nodes=1
-#SBATCH --partition=normal
-#SBATCH --time=12:00:00
+#SBATCH --partition=gpu_chen
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --mem=460000
-#SBATCH --cpus-per-task=288
-#SBATCH --environment=sdpo
+#SBATCH --cpus-per-task=16
 #SBATCH --output=logs/sdpo-svc-cl-%j.out
 #SBATCH --error=logs/sdpo-svc-cl-%j.err
 
