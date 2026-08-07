@@ -189,10 +189,25 @@ resolve_external_eval_files() {
 # whose immediate children each contain a split.
 resolve_dataset_files() {
     local dataset_dir="$1"
-    local prepartitioned=false prepartitioned_root
+    local train_file_hint="${2:-}"
+    local prepartitioned=false prepartitioned_root hinted_train_file
     TRAIN_FILES=()
     VAL_FILES=()
     MISSING_SPLITS=()
+
+    if [[ -n "$train_file_hint" ]]; then
+        hinted_train_file="$dataset_dir/$train_file_hint"
+        if [[ -f "$hinted_train_file" ]]; then
+            TRAIN_FILES=("$(realpath "$hinted_train_file")")
+        elif [[ "$DRY_RUN" == true ]]; then
+            TRAIN_FILES=("$(realpath -m "$hinted_train_file")")
+        else
+            echo "Configured training parquet does not exist: $hinted_train_file" >&2
+            exit 1
+        fi
+        # Train-only datasets obtain validation from CL_EXTERNAL_EVAL_GROUPS.
+        return
+    fi
 
     for prepartitioned_root in "${CL_PREPARTITIONED_DATASETS[@]}"; do
         if [[ "$dataset_dir" == "$prepartitioned_root" ]]; then
@@ -325,7 +340,9 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     current_train_files=()
     cumulative_val_files=()
     for ((eval_task = 0; eval_task <= task_index; eval_task++)); do
-        resolve_dataset_files "${CL_TRAIN_DATASETS[$eval_task]}"
+        resolve_dataset_files \
+            "${CL_TRAIN_DATASETS[$eval_task]}" \
+            "${CL_TRAIN_FILE_HINTS[$eval_task]}"
         cumulative_val_files+=("${VAL_FILES[@]}")
         if (( eval_task == task_index )); then
             current_train_files=("${TRAIN_FILES[@]}")
