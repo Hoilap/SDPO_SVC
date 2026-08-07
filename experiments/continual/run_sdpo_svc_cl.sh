@@ -360,9 +360,13 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     done
     EXTERNAL_EVAL_FILES=()
     for ((eval_task = 0; eval_task <= task_index; eval_task++)); do
-        IFS='|' read -r -a eval_group <<< "${CL_EXTERNAL_EVAL_GROUPS[$eval_task]}"
+        eval_group_spec="${CL_EXTERNAL_EVAL_GROUPS[$eval_task]}"
+        # ToolUse has no additional OOD benchmark in this setup.  Skip its
+        # empty group before creating/expanding an array, which is required for
+        # older Bash versions under `set -u`.
+        [[ -z "$eval_group_spec" ]] && continue
+        IFS='|' read -r -a eval_group <<< "$eval_group_spec"
         for eval_path in "${eval_group[@]}"; do
-            [[ -z "$eval_path" ]] && continue
             resolve_external_eval_files "$eval_path"
         done
     done
