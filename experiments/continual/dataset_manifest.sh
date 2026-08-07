@@ -15,13 +15,13 @@ CL_TRAIN_DATASETS=(
     "datasets/cl/code/Dolci-Think-RL-7B"
 )
 
-# Optional path, relative to CL_TRAIN_DATASETS, for train-only datasets whose
-# parquet is not named train.parquet.  Empty entries use normal split discovery.
+# Optional path or glob, relative to CL_TRAIN_DATASETS, for train-only datasets
+# whose parquet is not named train.parquet. Empty entries use split discovery.
 CL_TRAIN_FILE_HINTS=(
     "data/dapo-math-17k.parquet"
     ""
     ""
-    ""
+    "data/train-*.parquet"
 )
 
 # These repository datasets are already split.  The runner must consume their

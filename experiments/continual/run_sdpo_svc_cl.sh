@@ -195,19 +195,30 @@ resolve_external_eval_files() {
 resolve_dataset_files() {
     local dataset_dir="$1"
     local train_file_hint="${2:-}"
-    local prepartitioned=false prepartitioned_root hinted_train_file
+    local prepartitioned=false prepartitioned_root hinted_train_file hinted_pattern
+    local hint_found=false hint_count=0
     TRAIN_FILES=()
     VAL_FILES=()
     MISSING_SPLITS=()
 
     if [[ -n "$train_file_hint" ]]; then
-        hinted_train_file="$dataset_dir/$train_file_hint"
-        if [[ -f "$hinted_train_file" ]]; then
-            TRAIN_FILES=("$(realpath "$hinted_train_file")")
+        hinted_pattern="$dataset_dir/$train_file_hint"
+        while IFS= read -r hinted_train_file; do
+            [[ -z "$hinted_train_file" ]] && continue
+            TRAIN_FILES+=("$(realpath "$hinted_train_file")")
+            hint_found=true
+            hint_count=$((hint_count + 1))
+        done < <(compgen -G "$hinted_pattern" | sort)
+
+        if [[ "$hint_found" == true ]]; then
+            if [[ "$train_file_hint" == "data/train-*.parquet" && "$hint_count" -ne 9 ]]; then
+                echo "Expected 9 Dolci training shards, found $hint_count matching $hinted_pattern" >&2
+                exit 1
+            fi
         elif [[ "$DRY_RUN" == true ]]; then
-            TRAIN_FILES=("$(realpath -m "$hinted_train_file")")
+            TRAIN_FILES=("$(realpath -m "$hinted_pattern")")
         else
-            echo "Configured training parquet does not exist: $hinted_train_file" >&2
+            echo "Configured training parquet pattern has no matches: $hinted_pattern" >&2
             exit 1
         fi
         # Train-only datasets obtain validation from CL_EXTERNAL_EVAL_GROUPS.
