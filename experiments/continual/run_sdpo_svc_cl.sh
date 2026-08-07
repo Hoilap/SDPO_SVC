@@ -15,12 +15,13 @@
 
 # Sequential SDPO + task-boundary Singular Value Calibration (SVC).
 #
-# Submit the complete dependency-chained curriculum with:
-#   bash experiments/continual/submit_sdpo_svc_cl.sh
+# Run this script directly on an allocated compute node.  It executes all task
+# boundaries sequentially in the current 4-GPU allocation:
+#   bash experiments/continual/run_sdpo_svc_cl.sh
 #
 # Useful overrides:
-#   BASE_MODEL=/models/Qwen2.5-7B-Instruct TOTAL_EPOCHS=1 \
-#   SVC_DEVICE=cuda:0 bash experiments/continual/submit_sdpo_svc_cl.sh
+#   BASE_MODEL=../models/Qwen3-4B-Instruct TOTAL_EPOCHS=1 \
+#   SVC_DEVICE=cuda:0 bash experiments/continual/run_sdpo_svc_cl.sh
 #
 # Use --dry-run to validate the task order and print commands without training.
 
@@ -48,7 +49,7 @@ fi
 
 # Training configuration.  BASE_MODEL remains the common SVC anchor throughout
 # the curriculum; CURRENT_MODEL advances after every calibrated task boundary.
-BASE_MODEL="${BASE_MODEL:-../models/Qwen3-4B-Instruct}"
+BASE_MODEL="${BASE_MODEL:-../models/Qwen3-4B-Instruct-2507}"
 CURRENT_MODEL="${INITIAL_CONTINUAL_MODEL:-$BASE_MODEL}"
 CONFIG_NAME="${CONFIG_NAME:-sdpo}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/sdpo_svc_cl}"
@@ -92,8 +93,14 @@ if (( START_TASK > 0 )) && [[ -z "${INITIAL_CONTINUAL_MODEL:-}" ]]; then
     exit 2
 fi
 if [[ "$DRY_RUN" != true && -z "${SLURM_JOB_ID:-}" ]]; then
-    echo "This worker must run inside an sbatch allocation." >&2
-    echo "Submit the curriculum with: bash experiments/continual/submit_sdpo_svc_cl.sh" >&2
+    echo "This script must run on a Slurm-allocated compute node." >&2
+    echo "Allocate one node with 4 GPUs, then run: bash experiments/continual/run_sdpo_svc_cl.sh" >&2
+    exit 2
+fi
+if [[ "$DRY_RUN" != true && -n "${SLURM_GPUS_ON_NODE:-}" \
+      && "${SLURM_GPUS_ON_NODE}" =~ ([0-9]+)$ \
+      && "${BASH_REMATCH[1]}" -ne 4 ]]; then
+    echo "This experiment requires exactly 4 GPUs, but Slurm reports SLURM_GPUS_ON_NODE=$SLURM_GPUS_ON_NODE." >&2
     exit 2
 fi
 if [[ "$DRY_RUN" != true && "$WANDB_MODE" == "disabled" ]]; then
@@ -114,11 +121,11 @@ run_command() {
 }
 
 # Appends evaluation parquet files to EXTERNAL_EVAL_FILES.  External benchmarks
-# are never used as train files.  A single raw JSON benchmark (notably BFCL)
-# must have a preprocessed sibling parquet with the same basename.
+# are never used as train files.  A raw JSON benchmark must have a preprocessed
+# sibling parquet with the same basename.
 resolve_external_eval_files() {
     local eval_path="$1"
-    local eval_file candidate sibling answer_file initial_count
+    local eval_file candidate sibling initial_count
     initial_count="${#EXTERNAL_EVAL_FILES[@]}"
 
     if [[ -f "$eval_path" ]]; then
@@ -133,29 +140,12 @@ resolve_external_eval_files() {
                     EXTERNAL_EVAL_FILES+=("$(realpath "$sibling")")
                     return
                 fi
-                if [[ "$eval_path" == */bfcl_v4/data/* ]]; then
-                    answer_file="${eval_path/\/data\//\/possible_answer\/}"
-                    if [[ -f "$answer_file" ]]; then
-                        echo "Preprocessing paired BFCL evaluation data: $eval_path"
-                        run_command python3 "$PROJECT_ROOT/data/preprocess_bfcl.py" \
-                            --data-file "$eval_path" \
-                            --answer-file "$answer_file" \
-                            --output-file "$sibling"
-                        if [[ "$DRY_RUN" == true || -f "$sibling" ]]; then
-                            EXTERNAL_EVAL_FILES+=("$(realpath -m "$sibling")")
-                            return
-                        fi
-                    elif [[ "$DRY_RUN" != true ]]; then
-                        echo "Missing paired BFCL possible-answer file: $answer_file" >&2
-                        exit 1
-                    fi
-                fi
                 if [[ "$DRY_RUN" == true ]]; then
                     EXTERNAL_EVAL_FILES+=("$(realpath -m "$sibling")")
                     return
                 fi
                 echo "External eval JSON needs a verl-formatted parquet sibling: $sibling" >&2
-                echo "The raw BFCL question file alone has no executable ground-truth answers." >&2
+                echo "Raw JSON cannot be passed directly to verl data.val_files." >&2
                 exit 1
                 ;;
         esac
@@ -202,8 +192,17 @@ resolve_external_eval_files() {
 # whose immediate children each contain a split.
 resolve_dataset_files() {
     local dataset_dir="$1"
+    local prepartitioned=false prepartitioned_root
     TRAIN_FILES=()
     VAL_FILES=()
+    MISSING_SPLITS=()
+
+    for prepartitioned_root in "${CL_PREPARTITIONED_DATASETS[@]}"; do
+        if [[ "$dataset_dir" == "$prepartitioned_root" ]]; then
+            prepartitioned=true
+            break
+        fi
+    done
 
     if [[ "$DRY_RUN" == true && ! -d "$dataset_dir" ]]; then
         TRAIN_FILES=("$PROJECT_ROOT/$dataset_dir/train.parquet")
@@ -228,7 +227,25 @@ resolve_dataset_files() {
         train_file="$candidate/train.parquet"
         val_file="$candidate/test.parquet"
 
+        # Aggregate roots such as datasets/sciknoweval contain domain
+        # subdirectories rather than their own train/test pair.
+        if [[ ! -f "$train_file" && ! -f "$val_file" \
+              && ! -f "$candidate/train.json" && ! -f "$candidate/test.json" ]]; then
+            continue
+        fi
+
+        if [[ "$prepartitioned" == true && (! -f "$train_file" || ! -f "$val_file") ]]; then
+            if [[ "$DRY_RUN" == true ]]; then
+                TRAIN_FILES+=("$(realpath -m "$train_file")")
+                VAL_FILES+=("$(realpath -m "$val_file")")
+            else
+                MISSING_SPLITS+=("$train_file or $val_file")
+            fi
+            continue
+        fi
+
         if [[ (! -f "$train_file" || ! -f "$val_file") \
+              && "$prepartitioned" != true \
               && "$AUTO_PREPROCESS" == "1" \
               && -f "$candidate/train.json" \
               && -f "$candidate/test.json" ]]; then
@@ -246,6 +263,13 @@ resolve_dataset_files() {
             VAL_FILES+=("$(realpath "$val_file")")
         fi
     done
+
+    if (( ${#MISSING_SPLITS[@]} > 0 )); then
+        echo "Pre-partitioned dataset is missing existing parquet splits:" >&2
+        printf '  %s\n' "${MISSING_SPLITS[@]}" >&2
+        echo "Automatic JSON preprocessing is disabled for $dataset_dir." >&2
+        exit 1
+    fi
 
     # Some prepared datasets use descriptive parquet filenames instead of
     # train.parquet/test.parquet.  Accept those as a fallback.
@@ -299,20 +323,22 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     raw_hf_dir="$HF_ROOT/${task_number}-${dataset_name}-raw"
     calibrated_hf_dir="$HF_ROOT/${task_number}-${dataset_name}-svc"
 
-    resolve_dataset_files "$dataset_path"
-    current_train_files=("${TRAIN_FILES[@]}")
-
     # Same-distribution held-out tests and external benchmarks are cumulative,
     # providing a task-by-task forgetting matrix in W&B.
+    current_train_files=()
     cumulative_val_files=()
     for ((eval_task = 0; eval_task <= task_index; eval_task++)); do
         resolve_dataset_files "${CL_TRAIN_DATASETS[$eval_task]}"
         cumulative_val_files+=("${VAL_FILES[@]}")
+        if (( eval_task == task_index )); then
+            current_train_files=("${TRAIN_FILES[@]}")
+        fi
     done
     EXTERNAL_EVAL_FILES=()
     for ((eval_task = 0; eval_task <= task_index; eval_task++)); do
         IFS='|' read -r -a eval_group <<< "${CL_EXTERNAL_EVAL_GROUPS[$eval_task]}"
         for eval_path in "${eval_group[@]}"; do
+            [[ -z "$eval_path" ]] && continue
             resolve_external_eval_files "$eval_path"
         done
     done

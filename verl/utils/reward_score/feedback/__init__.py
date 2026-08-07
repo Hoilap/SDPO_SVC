@@ -1,4 +1,3 @@
-from verl.utils.reward_score.feedback import bfcl
 from verl.utils.reward_score.feedback import code
 from verl.utils.reward_score.feedback import gpqa
 from verl.utils.reward_score.feedback import math
@@ -22,8 +21,6 @@ def compute_score(
         results = mcq.compute_score(solution_str, ground_truth)
     elif data_source in ["tooluse"]:
         results = tooluse.compute_score(solution_str, ground_truth)
-    elif data_source in ["bfcl"]:
-        results = bfcl.compute_score(solution_str, ground_truth)
     else:
         raise ValueError(f"Reward style {data_source} not found.")
     return results
