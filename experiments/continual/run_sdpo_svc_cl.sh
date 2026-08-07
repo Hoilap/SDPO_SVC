@@ -343,7 +343,12 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         resolve_dataset_files \
             "${CL_TRAIN_DATASETS[$eval_task]}" \
             "${CL_TRAIN_FILE_HINTS[$eval_task]}"
-        cumulative_val_files+=("${VAL_FILES[@]}")
+        # A non-empty train-file hint denotes a train-only dataset (DAPO), so
+        # there is deliberately no VAL_FILES array to expand.  This explicit
+        # guard is required for older Bash versions when `set -u` is active.
+        if [[ -z "${CL_TRAIN_FILE_HINTS[$eval_task]}" ]]; then
+            cumulative_val_files+=("${VAL_FILES[@]}")
+        fi
         if (( eval_task == task_index )); then
             current_train_files=("${TRAIN_FILES[@]}")
         fi
