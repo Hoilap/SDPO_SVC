@@ -122,7 +122,7 @@ run_command() {
 # accepted directly by RLHFDataset.
 resolve_external_eval_files() {
     local eval_path="$1"
-    local eval_file candidate initial_count
+    local eval_file candidate diamond_parquet initial_count
     initial_count="${#EXTERNAL_EVAL_FILES[@]}"
 
     if [[ -f "$eval_path" ]]; then
@@ -131,11 +131,26 @@ resolve_external_eval_files() {
                 EXTERNAL_EVAL_FILES+=("$(realpath "$eval_path")")
                 return
                 ;;
+            */gpqa_diamond.csv)
+                diamond_parquet="${eval_path%.csv}.parquet"
+                if [[ ! -f "$diamond_parquet" ]]; then
+                    echo "Preprocessing GPQA Diamond evaluation set: $eval_path"
+                    run_command python3 "$PROJECT_ROOT/data/preprocess_gpqa.py" \
+                        --csv-file "$eval_path" \
+                        --output-file "$diamond_parquet"
+                fi
+                if [[ "$DRY_RUN" == true || -f "$diamond_parquet" ]]; then
+                    EXTERNAL_EVAL_FILES+=("$(realpath -m "$diamond_parquet")")
+                    return
+                fi
+                ;;
         esac
     fi
 
     if [[ "$DRY_RUN" == true && ! -e "$eval_path" ]]; then
-        if [[ "$eval_path" == *.parquet || "$eval_path" == *.json || "$eval_path" == *.jsonl ]]; then
+        if [[ "$eval_path" == */gpqa_diamond.csv ]]; then
+            EXTERNAL_EVAL_FILES+=("$(realpath -m "${eval_path%.csv}.parquet")")
+        elif [[ "$eval_path" == *.parquet || "$eval_path" == *.json || "$eval_path" == *.jsonl ]]; then
             EXTERNAL_EVAL_FILES+=("$(realpath -m "$eval_path")")
         else
             EXTERNAL_EVAL_FILES+=("$(realpath -m "$eval_path/test.parquet")")
