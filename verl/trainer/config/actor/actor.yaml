@@ -104,6 +104,15 @@ self_distillation:
   # EMA update rate for teacher weights, or trust-region mixing coefficient
   teacher_update_rate: 0.05 
 
+  # Optional checkpoint path used to initialize the teacher
+  teacher_path: null
+
+  # Teacher checkpoint mixing coefficient used during initialization
+  teacher_init_alpha: 1.0
+
+  # Ratio of response tokens to skip during self-distillation
+  mask_ratio: 0.0
+
   # Maximum length of the reprompted prompt
   max_reprompt_len: 10240
 

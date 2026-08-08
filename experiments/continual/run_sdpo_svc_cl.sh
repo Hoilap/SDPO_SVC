@@ -46,6 +46,9 @@ export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONBUFFERED=1
 export VLLM_USE_V1="${VLLM_USE_V1:-1}"
 export USER="${USER:-$(whoami)}"
+export WANDB_API_KEY="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"
+export WANDB_ENTITY="20040817dkn-facebook"
+export WANDB_PROJECT="SDPO"
 export WANDB_MODE="${WANDB_MODE:-online}"
 ulimit -c 0
 
@@ -436,7 +439,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "actor_rollout_ref.rollout.n=$ROLLOUT_BATCH_SIZE"
         "actor_rollout_ref.rollout.val_kwargs.n=16"
         "algorithm.rollout_correction.rollout_is=token"
-        "trainer.project_name=SDPO-SVC-CL"
+        "trainer.project_name=$WANDB_PROJECT"
         "trainer.group_name=SDPO-SVC-CL"
         "trainer.experiment_name=$experiment_name"
         "trainer.logger=['console','wandb']"
