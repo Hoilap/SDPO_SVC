@@ -66,14 +66,13 @@ _VLLM_VERSION = version.parse(vllm.__version__)
 
 if _VLLM_VERSION > version.parse("0.11.0"):
     from vllm.utils.argparse_utils import FlexibleArgumentParser
-    from vllm.utils.network_utils import get_tcp_uri
 
     if _VLLM_VERSION == version.parse("0.12.0"):
         from vllm.entrypoints.harmony_utils import get_encoding
 
         get_encoding()
 else:
-    from vllm.utils import FlexibleArgumentParser, get_tcp_uri
+    from vllm.utils import FlexibleArgumentParser
 if _VLLM_VERSION >= version.parse("0.12.0"):
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.outputs import ModelRunnerOutput
@@ -435,6 +434,11 @@ class vLLMHttpServer:
         # Import them lazily so single-node deployments can use run_server().
         from vllm.v1.engine.core import EngineCoreProc
         from vllm.v1.engine.utils import CoreEngineProcManager
+
+        if _VLLM_VERSION > version.parse("0.11.0"):
+            from vllm.utils.network_utils import get_tcp_uri
+        else:
+            from vllm.utils import get_tcp_uri
 
         # Create the EngineConfig.
         engine_args = vllm.AsyncEngineArgs.from_cli_args(args)
