@@ -133,9 +133,48 @@ run_command() {
     fi
 }
 
-# Appends evaluation parquet files to EXTERNAL_EVAL_FILES.  External benchmarks
-# are never used as train files.  Parquet, JSON, and JSONL eval files are all
-# accepted directly by RLHFDataset.
+# Append an evaluation file, normalizing raw math benchmarks to the common verl
+# schema first.  The generated cache is refreshed when either its source file
+# or the preprocessor changes.
+append_external_eval_file() {
+    local eval_file="$1"
+    local benchmark data_source normalized_file preprocessor
+    preprocessor="$PROJECT_ROOT/data/preprocess_math_eval.py"
+
+    case "$eval_file" in
+        */aime24/*)
+            benchmark="aime24"
+            data_source="math"
+            ;;
+        */aime25/*)
+            benchmark="aime25"
+            data_source="math"
+            ;;
+        */math500/*)
+            benchmark="math500"
+            data_source="math500"
+            ;;
+        *)
+            EXTERNAL_EVAL_FILES+=("$(realpath -m "$eval_file")")
+            return
+            ;;
+    esac
+
+    normalized_file="$OUTPUT_ROOT/eval_data/$benchmark.parquet"
+    if [[ "$DRY_RUN" == true || ! -f "$normalized_file" \
+          || "$eval_file" -nt "$normalized_file" || "$preprocessor" -nt "$normalized_file" ]]; then
+        echo "Preprocessing $benchmark evaluation set: $eval_file"
+        run_command python3 "$preprocessor" \
+            --input-file "$eval_file" \
+            --output-file "$normalized_file" \
+            --data-source "$data_source"
+    fi
+    EXTERNAL_EVAL_FILES+=("$(realpath -m "$normalized_file")")
+}
+
+# Appends evaluation files to EXTERNAL_EVAL_FILES. External benchmarks are
+# never used as train files. Raw AIME and MATH-500 files are normalized before
+# RLHFDataset attempts to concatenate them.
 resolve_external_eval_files() {
     local eval_path="$1"
     local eval_file candidate diamond_parquet initial_count
@@ -144,7 +183,7 @@ resolve_external_eval_files() {
     if [[ -f "$eval_path" ]]; then
         case "$eval_path" in
             *.parquet|*.json|*.jsonl)
-                EXTERNAL_EVAL_FILES+=("$(realpath "$eval_path")")
+                append_external_eval_file "$(realpath "$eval_path")"
                 return
                 ;;
             */gpqa_diamond.csv)
@@ -167,9 +206,9 @@ resolve_external_eval_files() {
         if [[ "$eval_path" == */gpqa_diamond.csv ]]; then
             EXTERNAL_EVAL_FILES+=("$(realpath -m "${eval_path%.csv}.parquet")")
         elif [[ "$eval_path" == *.parquet || "$eval_path" == *.json || "$eval_path" == *.jsonl ]]; then
-            EXTERNAL_EVAL_FILES+=("$(realpath -m "$eval_path")")
+            append_external_eval_file "$(realpath -m "$eval_path")"
         else
-            EXTERNAL_EVAL_FILES+=("$(realpath -m "$eval_path/test.parquet")")
+            append_external_eval_file "$(realpath -m "$eval_path/test.parquet")"
         fi
         return
     fi
@@ -188,12 +227,12 @@ resolve_external_eval_files() {
         "$eval_path/validation.jsonl" \
         "$eval_path/test.jsonl"; do
         if [[ -f "$candidate" ]]; then
-            EXTERNAL_EVAL_FILES+=("$(realpath "$candidate")")
+            append_external_eval_file "$(realpath "$candidate")"
             return
         fi
     done
     while IFS= read -r -d '' eval_file; do
-        EXTERNAL_EVAL_FILES+=("$(realpath "$eval_file")")
+        append_external_eval_file "$(realpath "$eval_file")"
     done < <(find "$eval_path" -maxdepth 2 -type f \
         \( -iname '*eval*.parquet' -o -iname '*validation*.parquet' -o -iname '*test*.parquet' \
         -o -iname '*eval*.jsonl' -o -iname '*validation*.jsonl' -o -iname '*test*.jsonl' \) \
