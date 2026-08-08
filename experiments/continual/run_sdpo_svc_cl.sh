@@ -17,7 +17,7 @@
 #   bash experiments/continual/run_sdpo_svc_cl.sh
 #
 # Useful overrides:
-#   BASE_MODEL=../models/Qwen3-4B-Instruct TOTAL_EPOCHS=1 \
+#   BASE_MODEL=../model/Qwen3-4B-Instruct TOTAL_EPOCHS=1 \
 #   SVC_DEVICE=cuda:0 sbatch experiments/continual/run_sdpo_svc_cl.sh
 #
 # Use --dry-run to validate the task order and print commands without training.
@@ -62,7 +62,7 @@ fi
 
 # Training configuration.  BASE_MODEL remains the common SVC anchor throughout
 # the curriculum; CURRENT_MODEL advances after every calibrated task boundary.
-BASE_MODEL="${BASE_MODEL:-../models/Qwen3-4B-Instruct-2507}"
+BASE_MODEL="${BASE_MODEL:-../model/Qwen3-4B-Instruct-2507}"
 CURRENT_MODEL="${INITIAL_CONTINUAL_MODEL:-$BASE_MODEL}"
 CONFIG_NAME="${CONFIG_NAME:-sdpo}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/sdpo_svc_cl}"
