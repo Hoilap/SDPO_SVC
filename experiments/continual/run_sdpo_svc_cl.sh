@@ -42,6 +42,12 @@ fi
 source "$SCRIPT_DIR/dataset_manifest.sh"
 cd "$PROJECT_ROOT"
 
+# This experiment runs on NVIDIA CUDA GPUs. Some cluster environments export
+# ROCm selectors as well, but verl rejects ROCR/HIP and CUDA visibility
+# variables when they are present at the same time.
+unset ROCR_VISIBLE_DEVICES
+unset HIP_VISIBLE_DEVICES
+
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONBUFFERED=1
 export VLLM_USE_V1="${VLLM_USE_V1:-1}"
