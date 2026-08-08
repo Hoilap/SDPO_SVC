@@ -73,6 +73,10 @@ def main() -> None:
         with_indices=True,
         remove_columns=source.column_names,
     )
+    # Dataset.map may retain the source feature when an output column reuses
+    # the same name (for example AIME25's integer ``answer`` column). Cast it
+    # explicitly so every benchmark produces the same reward_model schema.
+    formatted = formatted.cast_column("answer", datasets.Value("string"))
     processed = formatted.map(make_map_fn("test"), with_indices=True)
     args.output_file.parent.mkdir(parents=True, exist_ok=True)
     temporary_output = args.output_file.with_suffix(args.output_file.suffix + ".tmp")
