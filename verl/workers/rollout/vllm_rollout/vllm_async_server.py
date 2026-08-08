@@ -306,7 +306,6 @@ class vLLMHttpServer:
             "max_num_batched_tokens": self.config.max_num_batched_tokens,
             "enable_prefix_caching": self.config.enable_prefix_caching,
             "enable_sleep_mode": self.config.enable_sleep_mode,
-            "logprobs_mode": self.config.logprobs_mode,
             "disable_custom_all_reduce": True,
             "enforce_eager": self.config.enforce_eager,
             "gpu_memory_utilization": self.config.gpu_memory_utilization,
@@ -319,6 +318,12 @@ class vLLMHttpServer:
             "scheduling_policy": self.config.scheduling_policy,
             **engine_kwargs,
         }
+
+        # vLLM 0.8.x does not expose --logprobs-mode. Its logprob behavior is
+        # the historical processed-logprobs behavior, so omitting the option
+        # preserves the configured semantics on older releases.
+        if _VLLM_VERSION >= version.parse("0.12.0"):
+            args["logprobs_mode"] = self.config.logprobs_mode
 
         if self.config.prometheus.enable:
             if self.config.prometheus.served_model_name:
