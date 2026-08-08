@@ -40,8 +40,6 @@ from vllm.lora.request import LoRARequest
 from vllm.outputs import RequestOutput
 from vllm.usage.usage_lib import UsageContext
 from vllm.v1.engine.async_llm import AsyncLLM
-from vllm.v1.engine.core import EngineCoreProc
-from vllm.v1.engine.utils import CoreEngineProcManager
 from vllm.v1.executor.abstract import Executor
 
 from verl.single_controller.ray import RayClassWithInitArgs
@@ -432,6 +430,12 @@ class vLLMHttpServer:
         self._server_port, self._server_task = await run_unvicorn(app, args, self._server_address)
 
     async def run_headless(self, args: argparse.Namespace):
+        # These APIs are only required by the multi-node headless server and
+        # are unavailable in older supported vLLM releases such as 0.8.5.
+        # Import them lazily so single-node deployments can use run_server().
+        from vllm.v1.engine.core import EngineCoreProc
+        from vllm.v1.engine.utils import CoreEngineProcManager
+
         # Create the EngineConfig.
         engine_args = vllm.AsyncEngineArgs.from_cli_args(args)
         usage_context = UsageContext.OPENAI_API_SERVER

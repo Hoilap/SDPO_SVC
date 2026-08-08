@@ -83,6 +83,7 @@ TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-32}"
 ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}"
 PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-32}"
+FILTER_OVERLONG_PROMPTS_WORKERS="${FILTER_OVERLONG_PROMPTS_WORKERS:-16}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
 # This experiment is intentionally fixed to one 4-GPU Slurm node.
 N_GPUS_PER_NODE=4
@@ -471,6 +472,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "data.train_files=$train_files_override"
         "data.val_files=$val_files_override"
         "data.train_batch_size=$TRAIN_BATCH_SIZE"
+        "data.filter_overlong_prompts_workers=$FILTER_OVERLONG_PROMPTS_WORKERS"
         "actor_rollout_ref.model.path=$CURRENT_MODEL"
         "actor_rollout_ref.actor.self_distillation.teacher_path=$CURRENT_MODEL"
         "actor_rollout_ref.actor.self_distillation.teacher_init_alpha=1.0"
