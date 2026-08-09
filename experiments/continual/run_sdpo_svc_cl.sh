@@ -13,7 +13,7 @@
 # Sequential SDPO + task-boundary Singular Value Calibration (SVC).
 #
 # Run this script directly on an allocated compute node.  It executes all task
-# boundaries sequentially in the current 4-GPU allocation:
+# boundaries sequentially in the current 2-GPU allocation:
 #   bash experiments/continual/run_sdpo_svc_cl.sh
 #
 # Useful overrides:
@@ -92,8 +92,8 @@ ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}"
 PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-32}"
 FILTER_OVERLONG_PROMPTS_WORKERS="${FILTER_OVERLONG_PROMPTS_WORKERS:-16}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
-# This experiment is intentionally fixed to one 4-GPU Slurm node.
-N_GPUS_PER_NODE=4
+# This smoke-test configuration uses one 2-GPU Slurm node.
+N_GPUS_PER_NODE=2
 NNODES=1
 TEST_FREQ="${TEST_FREQ:-5}"
 DISTILLATION_TOPK="${DISTILLATION_TOPK:-100}"
@@ -126,8 +126,8 @@ if [[ "$DRY_RUN" != true && -z "${SLURM_JOB_ID:-}" ]]; then
 fi
 if [[ "$DRY_RUN" != true && -n "${SLURM_GPUS_ON_NODE:-}" \
       && "${SLURM_GPUS_ON_NODE}" =~ ([0-9]+)$ \
-      && "${BASH_REMATCH[1]}" -ne 4 ]]; then
-    echo "This experiment requires exactly 4 GPUs, but Slurm reports SLURM_GPUS_ON_NODE=$SLURM_GPUS_ON_NODE." >&2
+      && "${BASH_REMATCH[1]}" -ne "$N_GPUS_PER_NODE" ]]; then
+    echo "This experiment requires exactly $N_GPUS_PER_NODE GPUs, but Slurm reports SLURM_GPUS_ON_NODE=$SLURM_GPUS_ON_NODE." >&2
     exit 2
 fi
 if [[ "$DRY_RUN" != true && "$WANDB_MODE" == "disabled" ]]; then
