@@ -597,7 +597,15 @@ class vLLMHttpServer:
             await self.engine.reset_prefix_cache()
 
     async def wait_for_requests_to_drain(self):
-        await self.engine.wait_for_requests_to_drain()
+        wait_for_drain = getattr(self.engine, "wait_for_requests_to_drain", None)
+        if wait_for_drain is None:
+            # vLLM 0.8.x has no explicit drain API. AgentLoop only reaches this
+            # point after its generation coroutines have completed, so there
+            # are no outstanding requests left for the server to wait on.
+            return
+        wait_result = wait_for_drain()
+        if inspect.isawaitable(wait_result):
+            await wait_result
 
     async def abort_all_requests(self, reset_prefix_cache: bool = True) -> dict[str, Any]:
         """Abort all ongoing generation requests.
