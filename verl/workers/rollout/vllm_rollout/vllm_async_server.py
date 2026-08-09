@@ -521,7 +521,9 @@ class vLLMHttpServer:
         if video_data is not None:
             multi_modal_data["video"] = video_data
 
-        prompt = TokensPrompt(prompt_token_ids=prompt_ids, multi_modal_data=multi_modal_data)
+        prompt = TokensPrompt(prompt_token_ids=prompt_ids)
+        if multi_modal_data:
+            prompt["multi_modal_data"] = multi_modal_data
 
         # Add lora request
         lora_request = None
