@@ -42,6 +42,13 @@ fi
 source "$SCRIPT_DIR/dataset_manifest.sh"
 cd "$PROJECT_ROOT"
 
+# Triton and Torch Inductor require a newer compiler than the cluster's system
+# GCC. Export the selected toolchain so Ray workers and their subprocesses use
+# the same GCC 9.1 installation.
+module load gcc/9.1.0
+export CC="$(command -v gcc)"
+export CXX="$(command -v g++)"
+
 # This experiment runs on NVIDIA CUDA GPUs. Some cluster environments export
 # ROCm selectors as well, but verl rejects ROCR/HIP and CUDA visibility
 # variables when they are present at the same time.
