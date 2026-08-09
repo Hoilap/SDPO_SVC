@@ -419,8 +419,14 @@ class vLLMHttpServer:
 
         engine_client = AsyncLLM.from_vllm_config(vllm_config=vllm_config, usage_context=usage_context, **kwargs)
 
-        # Don't keep the dummy data in memory
-        await engine_client.reset_mm_cache()
+        # Don't keep the dummy multimodal data in memory when the installed
+        # vLLM exposes this newer API. vLLM 0.8.x has no multimodal cache reset
+        # method, and skipping it is safe for text-only rollouts.
+        reset_mm_cache = getattr(engine_client, "reset_mm_cache", None)
+        if reset_mm_cache is not None:
+            reset_result = reset_mm_cache()
+            if inspect.isawaitable(reset_result):
+                await reset_result
 
         app = build_app(args)
         if _VLLM_VERSION > version.parse("0.11.0"):

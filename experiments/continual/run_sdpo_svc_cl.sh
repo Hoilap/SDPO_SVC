@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --partition=gpu_chen
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=4
+#SBATCH --gpus-per-node=2
 #SBATCH --mem=460000
 #SBATCH --cpus-per-task=16
 #SBATCH --output=logs/sdpo-svc-cl-%j.out
