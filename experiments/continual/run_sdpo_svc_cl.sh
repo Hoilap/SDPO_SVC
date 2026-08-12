@@ -58,6 +58,12 @@ unset HIP_VISIBLE_DEVICES
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONBUFFERED=1
 export VLLM_USE_V1="${VLLM_USE_V1:-1}"
+# Keep Ray, Torch, and BLAS thread pools from exhausting the per-process/thread
+# limit during validation. Ray workers inherit these values.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 export USER="${USER:-$(whoami)}"
 export WANDB_API_KEY="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"
 export WANDB_ENTITY="20040817dkn-facebook"
@@ -90,12 +96,14 @@ TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-32}"
 ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}"
 PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-32}"
+VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-8}"
+VAL_ROLLOUT_BATCH_SIZE="${VAL_ROLLOUT_BATCH_SIZE:-16}"
 FILTER_OVERLONG_PROMPTS_WORKERS="${FILTER_OVERLONG_PROMPTS_WORKERS:-16}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
 # This smoke-test configuration uses one 2-GPU Slurm node.
 N_GPUS_PER_NODE=2
 NNODES=1
-TEST_FREQ="${TEST_FREQ:-5}"
+TEST_FREQ="${TEST_FREQ:-100}"
 DISTILLATION_TOPK="${DISTILLATION_TOPK:-100}"
 DISTILLATION_ALPHA="${DISTILLATION_ALPHA:-0.5}"
 TEACHER_UPDATE_RATE="${TEACHER_UPDATE_RATE:-0.05}"
@@ -479,6 +487,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "data.train_files=$train_files_override"
         "data.val_files=$val_files_override"
         "data.train_batch_size=$TRAIN_BATCH_SIZE"
+        "data.val_batch_size=$VAL_BATCH_SIZE"
         "data.filter_overlong_prompts_workers=$FILTER_OVERLONG_PROMPTS_WORKERS"
         "actor_rollout_ref.model.path=$CURRENT_MODEL"
         "actor_rollout_ref.actor.self_distillation.teacher_path=$CURRENT_MODEL"
@@ -491,7 +500,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "actor_rollout_ref.actor.optim.lr_warmup_steps=10"
         "actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH_SIZE"
         "actor_rollout_ref.rollout.n=$ROLLOUT_BATCH_SIZE"
-        "actor_rollout_ref.rollout.val_kwargs.n=16"
+        "actor_rollout_ref.rollout.val_kwargs.n=$VAL_ROLLOUT_BATCH_SIZE"
         "algorithm.rollout_correction.rollout_is=token"
         "trainer.project_name=$WANDB_PROJECT"
         "trainer.group_name=SDPO-SVC-CL"
