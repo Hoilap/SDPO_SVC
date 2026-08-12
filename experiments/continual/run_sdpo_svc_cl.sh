@@ -98,7 +98,8 @@ ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}"
 PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-32}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-8}"
 VAL_ROLLOUT_BATCH_SIZE="${VAL_ROLLOUT_BATCH_SIZE:-16}"
-FILTER_OVERLONG_PROMPTS_WORKERS="${FILTER_OVERLONG_PROMPTS_WORKERS:-16}"
+FILTER_OVERLONG_PROMPTS_WORKERS="${FILTER_OVERLONG_PROMPTS_WORKERS:-4}"
+AGENT_LOOP_WORKERS="${AGENT_LOOP_WORKERS:-2}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
 # This smoke-test configuration uses one 2-GPU Slurm node.
 N_GPUS_PER_NODE=2
@@ -501,6 +502,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH_SIZE"
         "actor_rollout_ref.rollout.n=$ROLLOUT_BATCH_SIZE"
         "actor_rollout_ref.rollout.val_kwargs.n=$VAL_ROLLOUT_BATCH_SIZE"
+        "actor_rollout_ref.rollout.agent.num_workers=$AGENT_LOOP_WORKERS"
         "algorithm.rollout_correction.rollout_is=token"
         "trainer.project_name=$WANDB_PROJECT"
         "trainer.group_name=SDPO-SVC-CL"
