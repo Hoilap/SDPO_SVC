@@ -4,16 +4,16 @@
 #SBATCH --nodes=1
 #SBATCH --partition=gpu_chen
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=2
+#SBATCH --gpus-per-node=4
 #SBATCH --mem=460000
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=32
 #SBATCH --output=logs/sdpo-svc-cl-%j.out
 #SBATCH --error=logs/sdpo-svc-cl-%j.err
 
 # Sequential SDPO + task-boundary Singular Value Calibration (SVC).
 #
 # Run this script directly on an allocated compute node.  It executes all task
-# boundaries sequentially in the current 2-GPU allocation:
+# boundaries sequentially in the current 4-GPU allocation:
 #   bash experiments/continual/run_sdpo_svc_cl.sh
 #
 # Useful overrides:
@@ -88,7 +88,6 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/sdpo_svc_cl}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-$OUTPUT_ROOT/checkpoints}"
 HF_ROOT="${HF_ROOT:-$OUTPUT_ROOT/hf_models}"
 HF_CACHE_DIR="${HF_CACHE_DIR:-$OUTPUT_ROOT/hf_cache}"
-DATA_POLICY_FILE="${DATA_POLICY_FILE:-$OUTPUT_ROOT/audited_training_data/training_data_policy.sh}"
 export WANDB_DIR="${WANDB_DIR:-$OUTPUT_ROOT/wandb}"
 
 START_TASK="${START_TASK:-0}"
@@ -100,10 +99,10 @@ PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-32}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-8}"
 VAL_ROLLOUT_BATCH_SIZE="${VAL_ROLLOUT_BATCH_SIZE:-16}"
 FILTER_OVERLONG_PROMPTS_WORKERS="${FILTER_OVERLONG_PROMPTS_WORKERS:-4}"
-AGENT_LOOP_WORKERS="${AGENT_LOOP_WORKERS:-2}"
+AGENT_LOOP_WORKERS="${AGENT_LOOP_WORKERS:-4}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
-# This smoke-test configuration uses one 2-GPU Slurm node.
-N_GPUS_PER_NODE=2
+# This experiment uses one 4-GPU Slurm node.
+N_GPUS_PER_NODE=4
 NNODES=1
 TEST_FREQ="${TEST_FREQ:-100}"
 DISTILLATION_TOPK="${DISTILLATION_TOPK:-100}"
@@ -125,25 +124,9 @@ if (( START_TASK < 0 || END_TASK >= ${#CL_TRAIN_DATASETS[@]} || START_TASK > END
     echo "Invalid task range START_TASK=$START_TASK END_TASK=$END_TASK" >&2
     exit 2
 fi
-if [[ ! -f "$DATA_POLICY_FILE" ]]; then
-    echo "Training data policy does not exist: $DATA_POLICY_FILE" >&2
-    echo "Run first: bash experiments/continual/audit_cl_training_data.sh" >&2
-    exit 2
-fi
-source "$DATA_POLICY_FILE"
-if (( ${#CL_AUDITED_TASK_NAMES[@]} != ${#CL_TASK_NAMES[@]} \
-      || ${#CL_AUDITED_TRAIN_MAX_SAMPLES[@]} != ${#CL_TASK_NAMES[@]} \
-      || ${#CL_AUDITED_TRAIN_SHUFFLE[@]} != ${#CL_TASK_NAMES[@]} )); then
-    echo "Invalid training data policy: array lengths differ from dataset_manifest.sh" >&2
-    exit 2
-fi
 for ((policy_index = 0; policy_index < ${#CL_TASK_NAMES[@]}; policy_index++)); do
-    if [[ "${CL_AUDITED_TASK_NAMES[$policy_index]}" != "${CL_TASK_NAMES[$policy_index]}" ]]; then
-        echo "Training data policy task order does not match dataset_manifest.sh" >&2
-        exit 2
-    fi
-    if [[ ! "${CL_AUDITED_TRAIN_MAX_SAMPLES[$policy_index]}" =~ ^-?[0-9]+$ \
-          || ! "${CL_AUDITED_TRAIN_SHUFFLE[$policy_index]}" =~ ^(true|false)$ ]]; then
+    if [[ ! "${CL_TRAIN_MAX_SAMPLES[$policy_index]}" =~ ^-?[0-9]+$ \
+          || ! "${CL_TRAIN_SHUFFLE[$policy_index]}" =~ ^(true|false)$ ]]; then
         echo "Invalid loader policy for task ${CL_TASK_NAMES[$policy_index]}" >&2
         exit 2
     fi
@@ -441,15 +424,14 @@ echo "Base anchor:       $BASE_MODEL"
 echo "Starting model:    $CURRENT_MODEL"
 echo "Task range:        $START_TASK..$END_TASK"
 echo "Output root:       $OUTPUT_ROOT"
-echo "Data policy:       $DATA_POLICY_FILE"
 echo "SVC:               rank=$SVC_RANK alpha=$SVC_ALPHA strength=$SVC_STRENGTH device=$SVC_DEVICE"
 echo "============================================================"
 
 for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     dataset_path="${CL_TRAIN_DATASETS[$task_index]}"
     dataset_name="${CL_TASK_NAMES[$task_index]}"
-    train_max_samples="${CL_AUDITED_TRAIN_MAX_SAMPLES[$task_index]}"
-    train_shuffle="${CL_AUDITED_TRAIN_SHUFFLE[$task_index]}"
+    train_max_samples="${CL_TRAIN_MAX_SAMPLES[$task_index]}"
+    train_shuffle="${CL_TRAIN_SHUFFLE[$task_index]}"
     task_number="$(printf '%02d' "$((task_index + 1))")"
     experiment_name="SDPO-SVC-CL-${task_number}-${dataset_name}"
     task_checkpoint_dir="$CHECKPOINT_ROOT/$experiment_name"

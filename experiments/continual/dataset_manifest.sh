@@ -24,6 +24,23 @@ CL_TRAIN_FILE_HINTS=(
     "data/train-*.parquet"
 )
 
+# Per-task loader policy. The distributed DAPO parquet consists of 100
+# consecutive copies of one 17,917-row source block, so math consumes only the
+# first complete block. The other datasets are loaded in full and shuffled.
+CL_TRAIN_MAX_SAMPLES=(
+    "17917"
+    "-1"
+    "-1"
+    "-1"
+)
+
+CL_TRAIN_SHUFFLE=(
+    "false"
+    "true"
+    "true"
+    "true"
+)
+
 # These repository datasets are already split.  The runner must consume their
 # existing train.parquet/test.parquet files and must never regenerate splits.
 CL_PREPARTITIONED_DATASETS=(
@@ -50,6 +67,8 @@ CL_EXTERNAL_EVAL_GROUPS=(
 
 if (( ${#CL_TASK_NAMES[@]} != ${#CL_TRAIN_DATASETS[@]} \
       || ${#CL_TASK_NAMES[@]} != ${#CL_TRAIN_FILE_HINTS[@]} \
+      || ${#CL_TASK_NAMES[@]} != ${#CL_TRAIN_MAX_SAMPLES[@]} \
+      || ${#CL_TASK_NAMES[@]} != ${#CL_TRAIN_SHUFFLE[@]} \
       || ${#CL_TASK_NAMES[@]} != ${#CL_EXTERNAL_EVAL_GROUPS[@]} )); then
     echo "Invalid continual dataset manifest: array lengths differ." >&2
     return 1 2>/dev/null || exit 1
