@@ -88,6 +88,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/sdpo_svc_cl}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-$OUTPUT_ROOT/checkpoints}"
 HF_ROOT="${HF_ROOT:-$OUTPUT_ROOT/hf_models}"
 HF_CACHE_DIR="${HF_CACHE_DIR:-$OUTPUT_ROOT/hf_cache}"
+DATA_POLICY_FILE="${DATA_POLICY_FILE:-$OUTPUT_ROOT/audited_training_data/training_data_policy.sh}"
 export WANDB_DIR="${WANDB_DIR:-$OUTPUT_ROOT/wandb}"
 
 START_TASK="${START_TASK:-0}"
@@ -124,6 +125,29 @@ if (( START_TASK < 0 || END_TASK >= ${#CL_TRAIN_DATASETS[@]} || START_TASK > END
     echo "Invalid task range START_TASK=$START_TASK END_TASK=$END_TASK" >&2
     exit 2
 fi
+if [[ ! -f "$DATA_POLICY_FILE" ]]; then
+    echo "Training data policy does not exist: $DATA_POLICY_FILE" >&2
+    echo "Run first: bash experiments/continual/audit_cl_training_data.sh" >&2
+    exit 2
+fi
+source "$DATA_POLICY_FILE"
+if (( ${#CL_AUDITED_TASK_NAMES[@]} != ${#CL_TASK_NAMES[@]} \
+      || ${#CL_AUDITED_TRAIN_MAX_SAMPLES[@]} != ${#CL_TASK_NAMES[@]} \
+      || ${#CL_AUDITED_TRAIN_SHUFFLE[@]} != ${#CL_TASK_NAMES[@]} )); then
+    echo "Invalid training data policy: array lengths differ from dataset_manifest.sh" >&2
+    exit 2
+fi
+for ((policy_index = 0; policy_index < ${#CL_TASK_NAMES[@]}; policy_index++)); do
+    if [[ "${CL_AUDITED_TASK_NAMES[$policy_index]}" != "${CL_TASK_NAMES[$policy_index]}" ]]; then
+        echo "Training data policy task order does not match dataset_manifest.sh" >&2
+        exit 2
+    fi
+    if [[ ! "${CL_AUDITED_TRAIN_MAX_SAMPLES[$policy_index]}" =~ ^-?[0-9]+$ \
+          || ! "${CL_AUDITED_TRAIN_SHUFFLE[$policy_index]}" =~ ^(true|false)$ ]]; then
+        echo "Invalid loader policy for task ${CL_TASK_NAMES[$policy_index]}" >&2
+        exit 2
+    fi
+done
 if (( START_TASK > 0 )) && [[ -z "${INITIAL_CONTINUAL_MODEL:-}" ]]; then
     echo "START_TASK > 0 requires INITIAL_CONTINUAL_MODEL=<previous calibrated HF checkpoint>." >&2
     exit 2
@@ -417,12 +441,15 @@ echo "Base anchor:       $BASE_MODEL"
 echo "Starting model:    $CURRENT_MODEL"
 echo "Task range:        $START_TASK..$END_TASK"
 echo "Output root:       $OUTPUT_ROOT"
+echo "Data policy:       $DATA_POLICY_FILE"
 echo "SVC:               rank=$SVC_RANK alpha=$SVC_ALPHA strength=$SVC_STRENGTH device=$SVC_DEVICE"
 echo "============================================================"
 
 for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     dataset_path="${CL_TRAIN_DATASETS[$task_index]}"
     dataset_name="${CL_TASK_NAMES[$task_index]}"
+    train_max_samples="${CL_AUDITED_TRAIN_MAX_SAMPLES[$task_index]}"
+    train_shuffle="${CL_AUDITED_TRAIN_SHUFFLE[$task_index]}"
     task_number="$(printf '%02d' "$((task_index + 1))")"
     experiment_name="SDPO-SVC-CL-${task_number}-${dataset_name}"
     task_checkpoint_dir="$CHECKPOINT_ROOT/$experiment_name"
@@ -480,6 +507,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     echo "[$task_number/${#CL_TRAIN_DATASETS[@]}] Training $dataset_path"
     echo "  input model: $CURRENT_MODEL"
     echo "  train files: ${TRAIN_FILES[*]}"
+    echo "  loader:      max_samples=$train_max_samples shuffle=$train_shuffle"
     echo "  val files:   ${VAL_FILES[*]}"
 
     train_cmd=(
@@ -488,6 +516,8 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "data.train_files=$train_files_override"
         "data.val_files=$val_files_override"
         "data.train_batch_size=$TRAIN_BATCH_SIZE"
+        "data.train_max_samples=$train_max_samples"
+        "data.shuffle=$train_shuffle"
         "data.val_batch_size=$VAL_BATCH_SIZE"
         "data.filter_overlong_prompts_workers=$FILTER_OVERLONG_PROMPTS_WORKERS"
         "actor_rollout_ref.model.path=$CURRENT_MODEL"
