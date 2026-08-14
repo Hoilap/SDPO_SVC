@@ -216,6 +216,8 @@ def audit_training_files(
                 f"Data audit cache hit: {cached_report['total_rows']} rows, "
                 f"{cached_report['unique_rows']} unique"
             )
+            if check_only:
+                print(f"Duplicate status: {'YES' if cached_report['duplicate_rows'] else 'NO'}")
             return cached_report
 
     total_rows, unique_rows, first_duplicate_index, found_new_unique_after_duplicate = audit_rows(
@@ -255,12 +257,10 @@ def audit_training_files(
         f"Data audit complete: {total_rows} rows, {unique_rows} unique, "
         f"{duplicate_rows} duplicates ({report['duplicate_fraction']:.2%})"
     )
-    if duplicate_rows and not check_only:
-        print(f"Using deduplicated training parquet: {output_path.resolve()}")
-    elif duplicate_rows and unique_prefix:
-        print(f"Suggested loader policy: max_samples={unique_rows}, shuffle=false")
+    if check_only:
+        print(f"Duplicate status: {'YES' if duplicate_rows else 'NO'}")
     elif duplicate_rows:
-        print("Duplicates are interleaved; max_samples/shuffle cannot safely remove them")
+        print(f"Using deduplicated training parquet: {output_path.resolve()}")
     return report
 
 
