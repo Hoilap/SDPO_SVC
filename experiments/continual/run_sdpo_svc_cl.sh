@@ -95,6 +95,7 @@ END_TASK="${END_TASK:-$((${#CL_TRAIN_DATASETS[@]} - 1))}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-32}"
 ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}"
+ROLLOUT_TENSOR_PARALLEL_SIZE="${ROLLOUT_TENSOR_PARALLEL_SIZE:-1}"
 PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-32}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-8}"
 VAL_ROLLOUT_BATCH_SIZE="${VAL_ROLLOUT_BATCH_SIZE:-16}"
@@ -122,6 +123,11 @@ SVC_SEED="${SVC_SEED:-0}"
 
 if (( START_TASK < 0 || END_TASK >= ${#CL_TRAIN_DATASETS[@]} || START_TASK > END_TASK )); then
     echo "Invalid task range START_TASK=$START_TASK END_TASK=$END_TASK" >&2
+    exit 2
+fi
+if [[ ! "$ROLLOUT_TENSOR_PARALLEL_SIZE" =~ ^[1-9][0-9]*$ ]] \
+   || (( N_GPUS_PER_NODE % ROLLOUT_TENSOR_PARALLEL_SIZE != 0 )); then
+    echo "ROLLOUT_TENSOR_PARALLEL_SIZE must be a positive divisor of $N_GPUS_PER_NODE" >&2
     exit 2
 fi
 for ((policy_index = 0; policy_index < ${#CL_TASK_NAMES[@]}; policy_index++)); do
@@ -424,6 +430,7 @@ echo "Base anchor:       $BASE_MODEL"
 echo "Starting model:    $CURRENT_MODEL"
 echo "Task range:        $START_TASK..$END_TASK"
 echo "Output root:       $OUTPUT_ROOT"
+echo "Rollout:           n=$ROLLOUT_BATCH_SIZE tp=$ROLLOUT_TENSOR_PARALLEL_SIZE"
 echo "SVC:               rank=$SVC_RANK alpha=$SVC_ALPHA strength=$SVC_STRENGTH device=$SVC_DEVICE"
 echo "============================================================"
 
@@ -513,6 +520,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "actor_rollout_ref.actor.optim.lr_warmup_steps=10"
         "actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH_SIZE"
         "actor_rollout_ref.rollout.n=$ROLLOUT_BATCH_SIZE"
+        "actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TENSOR_PARALLEL_SIZE"
         "actor_rollout_ref.rollout.val_kwargs.n=$VAL_ROLLOUT_BATCH_SIZE"
         "actor_rollout_ref.rollout.agent.num_workers=$AGENT_LOOP_WORKERS"
         "algorithm.rollout_correction.rollout_is=token"
