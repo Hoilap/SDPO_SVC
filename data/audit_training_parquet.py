@@ -73,6 +73,19 @@ def _source_metadata(paths: Sequence[Path]) -> list[dict[str, Any]]:
     return metadata
 
 
+def resolve_identity_columns(
+    paths: Sequence[Path], requested_columns: Sequence[str]
+) -> tuple[tuple[str, ...], str]:
+    """Use verl logical fields when available, otherwise compare complete rows."""
+    schemas = [pq.ParquetFile(path).schema_arrow for path in paths]
+    available_columns = set().union(*(schema.names for schema in schemas))
+    if all(set(requested_columns).issubset(schema.names) for schema in schemas):
+        return tuple(requested_columns), "verl-logical-row"
+    if not available_columns:
+        raise ValueError("Training parquet has no columns")
+    return tuple(sorted(available_columns)), "full-row-fallback"
+
+
 def _iter_rows(paths: Sequence[Path], batch_size: int) -> Iterable[dict[str, Any]]:
     for path in paths:
         parquet = pq.ParquetFile(path)
@@ -199,10 +212,12 @@ def audit_training_files(
     if missing:
         raise FileNotFoundError(f"Training parquet does not exist: {', '.join(missing)}")
 
-    available_columns = set(pq.ParquetFile(paths[0]).schema_arrow.names)
-    missing_identity = [column for column in identity_columns if column not in available_columns]
-    if missing_identity:
-        raise ValueError(f"Training parquet lacks identity columns: {', '.join(missing_identity)}")
+    identity_columns, identity_mode = resolve_identity_columns(paths, identity_columns)
+    if identity_mode == "full-row-fallback":
+        print(
+            "verl identity fields are unavailable; using all parquet columns "
+            "for exact full-row duplicate detection"
+        )
 
     sources = _source_metadata(paths)
     if report_path.is_file():
@@ -240,6 +255,7 @@ def audit_training_files(
         "mode": "check-only" if check_only else "deduplicate",
         "sources": sources,
         "identity_columns": list(identity_columns),
+        "identity_mode": identity_mode,
         "total_rows": total_rows,
         "unique_rows": unique_rows,
         "duplicate_rows": duplicate_rows,

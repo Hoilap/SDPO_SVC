@@ -103,3 +103,20 @@ def test_audit_cache_is_reused_for_unchanged_sources(tmp_path: Path, capsys) -> 
 
     assert second_report == first_report
     assert "Data audit cache hit" in capsys.readouterr().out
+
+
+def test_raw_schema_falls_back_to_exact_full_row_detection(tmp_path: Path) -> None:
+    source = tmp_path / "raw-code.parquet"
+    rows = [
+        {"messages": [{"role": "user", "content": "q0"}], "solution": "a0", "score": 1},
+        {"messages": [{"role": "user", "content": "q0"}], "solution": "a0", "score": 1},
+        {"messages": [{"role": "user", "content": "q0"}], "solution": "a1", "score": 1},
+    ]
+    _write(source, rows)
+
+    report = _audit(tmp_path, [source], check_only=True)
+
+    assert report["identity_mode"] == "full-row-fallback"
+    assert report["total_rows"] == 3
+    assert report["unique_rows"] == 2
+    assert report["duplicate_rows"] == 1
