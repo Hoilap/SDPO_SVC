@@ -20,7 +20,8 @@
 #   BASE_MODEL=../model/Qwen3-4B-Instruct TOTAL_EPOCHS=1 \
 #   SVC_DEVICE=cuda:0 sbatch experiments/continual/run_sdpo_svc_cl.sh
 #
-# Use --dry-run to validate the task order and print commands without training.
+# Use --dry-run to print commands without touching data. Use --preflight to
+# resolve and concatenate every stage's datasets without loading a model/GPU.
 
 set -euo pipefail
 
@@ -45,7 +46,12 @@ cd "$PROJECT_ROOT"
 # Triton and Torch Inductor require a newer compiler than the cluster's system
 # GCC. Export the selected toolchain so Ray workers and their subprocesses use
 # the same GCC 9.1 installation.
-module load gcc/9.1.0
+if command -v module >/dev/null 2>&1; then
+    module load gcc/9.1.0
+elif [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    echo "The environment-modules 'module' command is required inside the Slurm job." >&2
+    exit 2
+fi
 export CC="$(command -v gcc)"
 export CXX="$(command -v g++)"
 
@@ -72,10 +78,13 @@ export WANDB_MODE="${WANDB_MODE:-online}"
 ulimit -c 0
 
 DRY_RUN=false
+PREFLIGHT_ONLY=false
 if [[ "${1:-}" == "--dry-run" ]]; then
     DRY_RUN=true
+elif [[ "${1:-}" == "--preflight" ]]; then
+    PREFLIGHT_ONLY=true
 elif [[ $# -gt 0 ]]; then
-    echo "Usage: $0 [--dry-run]" >&2
+    echo "Usage: $0 [--dry-run|--preflight]" >&2
     exit 2
 fi
 
@@ -93,12 +102,19 @@ export WANDB_DIR="${WANDB_DIR:-$OUTPUT_ROOT/wandb}"
 START_TASK="${START_TASK:-0}"
 END_TASK="${END_TASK:-$((${#CL_TRAIN_DATASETS[@]} - 1))}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
+# Set to 1 for an end-to-end smoke job. ``null`` keeps the epoch-derived
+# production schedule.
+TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-null}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-32}"
 ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-4}"
 ROLLOUT_TENSOR_PARALLEL_SIZE="${ROLLOUT_TENSOR_PARALLEL_SIZE:-2}"
 PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-32}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-8}"
 VAL_ROLLOUT_BATCH_SIZE="${VAL_ROLLOUT_BATCH_SIZE:-16}"
+# Reward-manager response dumps are extremely verbose because this limit is
+# applied independently to every validation batch. Keep them disabled; use
+# W&B generation logging or validation_data_dir for intentional sample dumps.
+VAL_REWARD_NUM_EXAMINE="${VAL_REWARD_NUM_EXAMINE:-0}"
 FILTER_OVERLONG_PROMPTS_WORKERS="${FILTER_OVERLONG_PROMPTS_WORKERS:-4}"
 AGENT_LOOP_WORKERS="${AGENT_LOOP_WORKERS:-4}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
@@ -141,7 +157,7 @@ if (( START_TASK > 0 )) && [[ -z "${INITIAL_CONTINUAL_MODEL:-}" ]]; then
     echo "START_TASK > 0 requires INITIAL_CONTINUAL_MODEL=<previous calibrated HF checkpoint>." >&2
     exit 2
 fi
-if [[ "$DRY_RUN" != true && -z "${SLURM_JOB_ID:-}" ]]; then
+if [[ "$DRY_RUN" != true && "$PREFLIGHT_ONLY" != true && -z "${SLURM_JOB_ID:-}" ]]; then
     echo "This script must be submitted through Slurm." >&2
     echo "Run: sbatch experiments/continual/run_sdpo_svc_cl.sh" >&2
     exit 2
@@ -224,7 +240,8 @@ resolve_external_eval_files() {
                 ;;
             */gpqa_diamond.csv)
                 diamond_parquet="${eval_path%.csv}.parquet"
-                if [[ ! -f "$diamond_parquet" ]]; then
+                if [[ ! -f "$diamond_parquet" || "$eval_path" -nt "$diamond_parquet" \
+                      || "$PROJECT_ROOT/data/preprocess_gpqa.py" -nt "$diamond_parquet" ]]; then
                     echo "Preprocessing GPQA Diamond evaluation set: $eval_path"
                     run_command python3 "$PROJECT_ROOT/data/preprocess_gpqa.py" \
                         --csv-file "$eval_path" \
@@ -482,7 +499,8 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     train_files_override="$(hydra_list "${TRAIN_FILES[@]}")"
     val_files_override="$(hydra_list "${VAL_FILES[@]}")"
 
-    if [[ "$DRY_RUN" != true && ( -e "$raw_hf_dir" || -e "$calibrated_hf_dir" ) ]]; then
+    if [[ "$DRY_RUN" != true && "$PREFLIGHT_ONLY" != true \
+          && ( -e "$raw_hf_dir" || -e "$calibrated_hf_dir" ) ]]; then
         echo "Refusing to overwrite an existing HF output for task $task_number:" >&2
         echo "  $raw_hf_dir" >&2
         echo "  $calibrated_hf_dir" >&2
@@ -498,6 +516,16 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     echo "  train files: ${TRAIN_FILES[*]}"
     echo "  loader:      max_samples=$train_max_samples shuffle=$train_shuffle"
     echo "  val files:   ${VAL_FILES[*]}"
+
+    if [[ "$DRY_RUN" != true ]]; then
+        python3 "$PROJECT_ROOT/data/preflight_rl_dataset.py" \
+            --name "$experiment_name train" "${TRAIN_FILES[@]}"
+        python3 "$PROJECT_ROOT/data/preflight_rl_dataset.py" \
+            --name "$experiment_name validation" "${VAL_FILES[@]}"
+    fi
+    if [[ "$PREFLIGHT_ONLY" == true ]]; then
+        continue
+    fi
 
     train_cmd=(
         python3 -m verl.trainer.main_ppo
@@ -531,6 +559,8 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "trainer.default_local_dir=$task_checkpoint_dir"
         "trainer.resume_mode=disable"
         "trainer.total_epochs=$TOTAL_EPOCHS"
+        "trainer.total_training_steps=$TOTAL_TRAINING_STEPS"
+        "trainer.val_reward_num_examine=$VAL_REWARD_NUM_EXAMINE"
         "trainer.save_freq=1000000000"
         "trainer.max_actor_ckpt_to_keep=1"
         "trainer.test_freq=$TEST_FREQ"
@@ -576,6 +606,12 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     CURRENT_MODEL="$calibrated_hf_dir"
     echo "[$task_number/${#CL_TRAIN_DATASETS[@]}] Boundary complete: $CURRENT_MODEL"
 done
+
+if [[ "$PREFLIGHT_ONLY" == true ]]; then
+    echo
+    echo "Preflight complete. Every task's train and cumulative validation files can be concatenated."
+    exit 0
+fi
 
 echo
 echo "Continual-learning curriculum complete."

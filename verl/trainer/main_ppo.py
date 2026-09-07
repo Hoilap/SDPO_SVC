@@ -328,8 +328,15 @@ class TaskRunner:
         reward_fn = load_reward_manager(
             config, tokenizer, num_examine=0, **config.reward_model.get("reward_kwargs", {})
         )
+        # Printing decoded validation responses from the reward manager is a
+        # debugging aid. Keep it opt-in: the manager's counter is local to one
+        # batch, so even ``1`` otherwise prints a full response for every
+        # validation batch and can produce enormous Slurm logs.
         val_reward_fn = load_reward_manager(
-            config, tokenizer, num_examine=1, **config.reward_model.get("reward_kwargs", {})
+            config,
+            tokenizer,
+            num_examine=config.trainer.get("val_reward_num_examine", 0),
+            **config.reward_model.get("reward_kwargs", {}),
         )
 
         resource_pool_manager = self.init_resource_pool_mgr(config)

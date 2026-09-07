@@ -32,7 +32,9 @@ def format_gpqa(example: dict, index: int, seed: int) -> dict:
         "description": question,
         "kind": "gpqa",
         "dataset": "gpqa",
-        "elo": "-",
+        # GPQA has no Elo annotation. A null value preserves that meaning and
+        # can be aligned with numeric Elo metadata in cumulative validation.
+        "elo": None,
         "system": None,
     }
 

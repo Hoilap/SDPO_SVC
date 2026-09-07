@@ -48,7 +48,10 @@ def format_math_eval(example: dict[str, Any], index: int, data_source: str) -> d
         "description": problem,
         "kind": "math",
         "dataset": data_source,
-        "elo": "-",
+        # These benchmarks have no Elo annotation. Keep the value unknown
+        # rather than inventing a rating; a null feature can be aligned with
+        # the numeric Elo metadata used by SciKnowEval and ToolUse.
+        "elo": None,
         "system": None,
     }
 
