@@ -23,7 +23,7 @@ def compute_score(solution: str, ground_truth: str) -> dict:
     multiple_choice_answer = extract_xml_answer(solution)
 
     reward = float(multiple_choice_answer == ground_truth)
-    incorrect_format = is_correct_format(solution)
+    incorrect_format = not is_correct_format(solution)
 
     return {
       "score": reward,

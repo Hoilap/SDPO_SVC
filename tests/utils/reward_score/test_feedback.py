@@ -17,5 +17,50 @@ def test_math_dapo_aliases_use_feedback_math_score(data_source):
             extra_info={"split": "train"},
         )
 
-    assert result == expected
+    assert result == {
+        **expected,
+        "truncated": 0,
+        "truncated_and_missing_answer": 0,
+    }
     mock_compute_score.assert_called_once_with("Answer: 42", "42", {"split": "train"})
+
+
+@pytest.mark.parametrize("data_source", ["gpqa", "sciknoweval"])
+def test_non_math_scores_include_truncation_metadata(data_source):
+    scorer = "gpqa" if data_source == "gpqa" else "mcq"
+    expected = {
+        "score": 0.0,
+        "acc": 0.0,
+        "pred": "",
+        "incorrect_format": 1,
+        "feedback": "",
+    }
+
+    with patch(f"verl.utils.reward_score.feedback.{scorer}.compute_score", return_value=expected):
+        result = compute_score(
+            data_source=data_source,
+            solution_str="",
+            ground_truth="A",
+            extra_info={"truncated": True},
+        )
+
+    assert result["truncated"] == 1
+    assert result["truncated_and_missing_answer"] == 1
+
+
+def test_mcq_incorrect_format_flag():
+    valid = compute_score(
+        data_source="sciknoweval",
+        solution_str="<answer>A</answer>",
+        ground_truth="A",
+        extra_info={"truncated": False},
+    )
+    invalid = compute_score(
+        data_source="sciknoweval",
+        solution_str="A",
+        ground_truth="A",
+        extra_info={"truncated": False},
+    )
+
+    assert valid["incorrect_format"] == 0
+    assert invalid["incorrect_format"] == 1
