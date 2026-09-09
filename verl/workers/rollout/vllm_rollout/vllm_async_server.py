@@ -60,6 +60,7 @@ from verl.workers.rollout.vllm_rollout.utils import (
     VLLM_LORA_PATH,
     build_cli_args_from_config,
     get_vllm_max_lora_rank,
+    resolve_max_model_len,
 )
 
 _VLLM_VERSION = version.parse(vllm.__version__)
@@ -199,7 +200,9 @@ class vLLMHttpServer:
 
         self.config: RolloutConfig = omega_conf_to_dataclass(config)
         self.model_config: HFModelConfig = omega_conf_to_dataclass(model_config, dataclass_type=HFModelConfig)
-        self.config.max_model_len = get_max_position_embeddings(self.model_config.hf_config)
+        self.config.max_model_len = resolve_max_model_len(
+            self.config.max_model_len, get_max_position_embeddings(self.model_config.hf_config)
+        )
         self.rollout_mode = rollout_mode
         self.workers = workers
 

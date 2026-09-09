@@ -21,6 +21,15 @@ VLLM_LORA_NAME = "123"
 VLLM_LORA_PATH = "simon_lora_path"
 
 
+def resolve_max_model_len(configured_len: int | None, model_max_len: int) -> int:
+    """Respect an explicit rollout context limit, falling back to the model limit."""
+    if configured_len is None:
+        return model_max_len
+    if not 0 < configured_len <= model_max_len:
+        raise ValueError(f"rollout.max_model_len must be between 1 and {model_max_len}, got {configured_len}")
+    return configured_len
+
+
 def get_vllm_max_lora_rank(lora_rank: int):
     """
     For vLLM, the smallest `max_lora_rank` is 8, and allowed values are (8, 16, 32, 64, 128, 256, 320, 512)

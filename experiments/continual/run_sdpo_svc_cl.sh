@@ -530,6 +530,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     train_cmd=(
         python3 -m verl.trainer.main_ppo
         --config-name "$CONFIG_NAME"
+        "ray_kwargs.ray_init.num_cpus=${SLURM_CPUS_PER_TASK:-32}"
         "data.train_files=$train_files_override"
         "data.val_files=$val_files_override"
         "data.train_batch_size=$TRAIN_BATCH_SIZE"
