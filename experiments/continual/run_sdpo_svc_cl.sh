@@ -90,6 +90,24 @@ fi
 
 # Training configuration.  BASE_MODEL remains the common SVC anchor throughout
 # the curriculum; CURRENT_MODEL advances after every calibrated task boundary.
+# Opt-in integration smoke test; production defaults below remain unchanged.
+RUN_PROFILE="${RUN_PROFILE:-production}"
+case "$RUN_PROFILE" in
+    production) ;;
+    smoke)
+        CONFIG_NAME="${CONFIG_NAME:-sdpo_smoke}"
+        OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/sdpo_svc_cl_smoke/${SLURM_JOB_ID:-manual}}"
+        TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-2}"
+        TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-8}"
+        PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-8}"
+        TRAIN_SAMPLE_LIMIT="${TRAIN_SAMPLE_LIMIT:-128}"
+        VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-4}"
+        VAL_ROLLOUT_BATCH_SIZE="${VAL_ROLLOUT_BATCH_SIZE:-1}"
+        LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-0}"
+        TEST_FREQ="${TEST_FREQ:-1000000000}"
+        ;;
+    *) echo "Unknown RUN_PROFILE=$RUN_PROFILE (expected production or smoke)" >&2; exit 2 ;;
+esac
 BASE_MODEL="${BASE_MODEL:-../model/Qwen3-4B-Instruct-2507}"
 CURRENT_MODEL="${INITIAL_CONTINUAL_MODEL:-$BASE_MODEL}"
 CONFIG_NAME="${CONFIG_NAME:-sdpo}"
@@ -118,6 +136,13 @@ VAL_REWARD_NUM_EXAMINE="${VAL_REWARD_NUM_EXAMINE:-0}"
 FILTER_OVERLONG_PROMPTS_WORKERS="${FILTER_OVERLONG_PROMPTS_WORKERS:-4}"
 AGENT_LOOP_WORKERS="${AGENT_LOOP_WORKERS:-4}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
+LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-10}"
+# Applied on top of manifest limits, never enlarging the deduplicated math pool.
+TRAIN_SAMPLE_LIMIT="${TRAIN_SAMPLE_LIMIT:--1}"
+if [[ ! "$TRAIN_SAMPLE_LIMIT" =~ ^[1-9][0-9]*$ && "$TRAIN_SAMPLE_LIMIT" != -1 ]]; then
+    echo "TRAIN_SAMPLE_LIMIT must be -1 or a positive integer" >&2
+    exit 2
+fi
 # This experiment uses one 4-GPU Slurm node.
 N_GPUS_PER_NODE=4
 NNODES=1
@@ -455,6 +480,9 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     dataset_path="${CL_TRAIN_DATASETS[$task_index]}"
     dataset_name="${CL_TASK_NAMES[$task_index]}"
     train_max_samples="${CL_TRAIN_MAX_SAMPLES[$task_index]}"
+    if (( TRAIN_SAMPLE_LIMIT > 0 && (train_max_samples < 0 || TRAIN_SAMPLE_LIMIT < train_max_samples) )); then
+        train_max_samples="$TRAIN_SAMPLE_LIMIT"
+    fi
     train_shuffle="${CL_TRAIN_SHUFFLE[$task_index]}"
     task_number="$(printf '%02d' "$((task_index + 1))")"
     experiment_name="SDPO-SVC-CL-${task_number}-${dataset_name}"
@@ -546,7 +574,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "actor_rollout_ref.actor.self_distillation.alpha=$DISTILLATION_ALPHA"
         "actor_rollout_ref.actor.self_distillation.dont_reprompt_on_self_success=True"
         "actor_rollout_ref.actor.optim.lr=$LEARNING_RATE"
-        "actor_rollout_ref.actor.optim.lr_warmup_steps=10"
+        "actor_rollout_ref.actor.optim.lr_warmup_steps=$LR_WARMUP_STEPS"
         "actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH_SIZE"
         "actor_rollout_ref.rollout.n=$ROLLOUT_BATCH_SIZE"
         "actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TENSOR_PARALLEL_SIZE"

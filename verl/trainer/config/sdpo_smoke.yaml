@@ -1,0 +1,21 @@
+# Engineering integration test, not a learning-quality experiment.
+# Use with RUN_PROFILE=smoke in experiments/continual/run_sdpo_svc_cl.sh.
+defaults:
+  - sdpo
+  - _self_
+
+# Inherit all sequence-length limits and token budgets unchanged from sdpo.
+
+data:
+  seed: 42
+  # A cap across the combined validation pool, NOT a per-benchmark quota.
+  val_max_samples: 32
+
+actor_rollout_ref:
+  model:
+    enable_gradient_checkpointing: False
+  actor:
+    ppo_micro_batch_size_per_gpu: 1
+
+trainer:
+  val_before_train: False
