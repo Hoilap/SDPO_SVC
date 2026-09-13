@@ -1,4 +1,4 @@
-# No-gradient-checkpointing smoke test
+# Continual smoke test
 
 From the repository root, with the normal `sdpo` environment activated:
 
@@ -35,10 +35,10 @@ Use a clean shell or unset previous experiment overrides: explicit environment
 settings take precedence over the profile's shell defaults.
 
 Defaults: all four tasks, 2 updates per task, 8 prompts per global batch,
-4 responses per prompt, micro batch 1 per GPU on 4 GPUs (8 accumulation steps),
+4 responses per prompt, micro batch 2 per GPU on 4 GPUs (4 accumulation steps),
 24 CPU cores per job (Ray follows the Slurm CPU allocation),
 learning rate 1e-5, no warmup, Top-100 + tail distillation with alpha 0.5,
-EMA rate 0.05. Gradient checkpointing is disabled. Student prompt/response
+EMA rate 0.05. Gradient checkpointing is enabled. Student prompt/response
 limits remain 2048/8192; teacher reprompt limit remains 10240 and max_model_len
 remains 18944. All length limits and derived token budgets are inherited from
 the production configuration without overrides. SVC is unchanged
@@ -66,7 +66,8 @@ Task-final validation is before SVC, not an evaluation of the calibrated output.
 GPU memory safety is not guaranteed by configuration alone. Inspect all GPUs
 through a complete update and validation; teacher offload, FSDP communication,
 long logits, and model initialization can still cause peaks. In particular,
-disabling gradient checkpointing while retaining production length limits can
-cause OOM even with micro batch 1. A short-sample pass does not establish safety
+gradient checkpointing saves student activations, but micro batch 2 increases
+teacher/logits memory relative to micro batch 1 and can still cause OOM.
+A short-sample pass does not establish safety
 at the length limits. If this smoke test passes, increase steps and sample counts
 before a full experiment; keep length limits unchanged.

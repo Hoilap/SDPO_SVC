@@ -80,7 +80,8 @@ class SmokeProfileTest(unittest.TestCase):
         with (ROOT / "verl/trainer/config/sdpo_smoke.yaml").open() as source:
             config = yaml.safe_load(source)
         self.assertEqual(config["defaults"], ["sdpo", "_self_"])
-        self.assertFalse(config["actor_rollout_ref"]["model"]["enable_gradient_checkpointing"])
+        self.assertTrue(config["actor_rollout_ref"]["model"]["enable_gradient_checkpointing"])
+        self.assertEqual(config["actor_rollout_ref"]["actor"]["ppo_micro_batch_size_per_gpu"], 2)
         self.assertEqual(config["data"]["val_max_samples"], 32)
 
         # Lengths and token budgets must remain inherited from production.
