@@ -26,16 +26,31 @@ class DataOnlyUnpickler(pickle.Unpickler):
         raise ValueError("Persistent pickle references are forbidden")
 
 
-def decode_private_tests(value):
-    # LCB stores a pickled JSON string, not executable Python test objects.
+def _decode_pickled_data(value):
     decoder = zlib.decompressobj()
     decoded = decoder.decompress(base64.b64decode(value, validate=True), 64 * 1024 * 1024)
     if not decoder.eof or decoder.unconsumed_tail:
         raise ValueError("Oversized or incomplete private-test payload")
-    payload = DataOnlyUnpickler(io.BytesIO(decoded)).load()
+    return DataOnlyUnpickler(io.BytesIO(decoded)).load()
+
+
+def decode_private_tests(value):
+    # LCB stores a pickled JSON string, not executable Python test objects.
+    payload = _decode_pickled_data(value)
     if not isinstance(payload, str):
         raise ValueError("Expected a JSON string inside private-test pickle")
     return json.loads(payload)
+
+
+def decode_dolci_tests(value):
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        # Dolci's stdin subset also contains zlib/base64 encoded plain lists.
+        payload = _decode_pickled_data(value)
+        if not isinstance(payload, list):
+            raise ValueError("Expected a test list inside Dolci test pickle")
+        return payload
 
 
 def _row(prompt, tests, source, split, index):
@@ -117,7 +132,7 @@ def format_dolci(row, index):
     ground_truth = row.get("ground_truth")
     if not isinstance(ground_truth, list) or len(ground_truth) != 1:
         raise ValueError(f"{index}: expected exactly one ground_truth payload")
-    tests = json.loads(ground_truth[0])
+    tests = decode_dolci_tests(ground_truth[0])
     if not isinstance(tests, list) or not tests:
         raise ValueError(f"{index}: expected nonempty test list")
     original_test_count = len(tests)

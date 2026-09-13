@@ -12,6 +12,10 @@ def encoded(tests):
     return base64.b64encode(zlib.compress(pickle.dumps(json.dumps(tests)))).decode()
 
 
+def encoded_object(value):
+    return base64.b64encode(zlib.compress(pickle.dumps(value))).decode()
+
+
 def test_dolci_filters_noncode_and_preserves_tests():
     assert format_dolci({"dataset": ["math"]}, 0) is None
     for label, payload, expected in (
@@ -57,6 +61,16 @@ def test_dolci_mixed_singleton_lists_preserve_all_102_tests():
     assert len(tests["inputs"]) == len(tests["outputs"]) == 102
     assert tests["inputs"] == ["123"] + [str(i) for i in range(101)]
     assert tests["outputs"] == ["123"] + [f"{i}\n" for i in range(101)]
+
+
+def test_dolci_decodes_compressed_stdio_test_lists():
+    payload = [{"input": "1 2\n", "output": "3\n"}]
+    row = format_dolci(
+        dict(dataset=["code_stdio"], ground_truth=[encoded_object(payload)], prompt="user: Add"), 1
+    )
+    tests = json.loads(row["reward_model"]["ground_truth"])
+    assert tests["inputs"] == ["1 2\n"]
+    assert tests["outputs"] == ["3\n"]
 
 
 @pytest.mark.parametrize("value", [[], ["one", "two"], [123], [["123"]], None, 123])

@@ -65,6 +65,8 @@ Syntactically valid assertion suites without an observable correctness oracle
 are excluded and reported separately with their fraction among code candidates.
 Recognized oracles include Python `assert`, unittest-style `assert*` calls,
 `pytest.raises`/`assertRaises`, and explicit `raise AssertionError` checks.
+Dolci stdin tests are accepted in both JSON and its compressed plain-data
+pickle representation; pickle globals and persistent references are rejected.
 Dependent assertion snippets (shared definitions, setup or helper calls) run as
 one ordered suite with an aggregate one-second-per-source-snippet time budget.
 All source snippets are retained, with `original_test_count` in the test payload.
