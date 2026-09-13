@@ -64,6 +64,21 @@ def _stdio_text(value, location):
     raise ValueError(f"{location}: expected text or a singleton text list, got {type(value).__name__}")
 
 
+def _assertion_suite(tests, index):
+    """Keep dependent snippets in one namespace instead of inventing setup."""
+    trees = [ast.parse(test) for test in tests]
+    if not any(isinstance(node, ast.Assert) for tree in trees for node in ast.walk(tree)):
+        raise ValueError(f"{index}: test suite has no assertion")
+    independent = all(tree.body and all(isinstance(node, ast.Assert) for node in tree.body) for tree in trees)
+    if independent:
+        return tests, None
+    # Definitions, imports, assignments and helper calls may carry shared state.
+    suite = "\n\n".join(tests)
+    ast.parse(suite)
+    # Retain the original aggregate budget of one second per source test.
+    return [suite], len(tests)
+
+
 def format_dolci(row, index):
     labels = row.get("dataset")
     if labels not in (["code"], ["code_stdio"]):
@@ -74,6 +89,8 @@ def format_dolci(row, index):
     tests = json.loads(ground_truth[0])
     if not isinstance(tests, list) or not tests:
         raise ValueError(f"{index}: expected nonempty test list")
+    original_test_count = len(tests)
+    time_limit = None
     if labels == ["code_stdio"]:
         if not all(isinstance(t, dict) for t in tests):
             raise ValueError(f"{index}: malformed stdin tests")
@@ -83,18 +100,22 @@ def format_dolci(row, index):
     else:
         if not all(isinstance(t, str) and t.strip() for t in tests):
             raise ValueError(f"{index}: malformed assertion tests")
-        for test in tests:
-            tree = ast.parse(test)
-            if not any(isinstance(node, ast.Assert) for node in ast.walk(tree)):
-                raise ValueError(f"{index}: test has no assertion")
-        inputs, outputs, testtype = tests, [""] * len(tests), "code"
+        inputs, time_limit = _assertion_suite(tests, index)
+        outputs, testtype = [""] * len(inputs), "code"
     prompt = row["prompt"]
     if prompt.startswith("user: "):
         prompt = prompt[len("user: ") :]
     prompt += "\n\nReturn the complete Python solution in a ```python ... ``` code block."
     return _row(
         prompt,
-        dict(inputs=inputs, outputs=outputs, testtype=testtype, fn_name="", time_limit=None),
+        dict(
+            inputs=inputs,
+            outputs=outputs,
+            testtype=testtype,
+            fn_name="",
+            time_limit=time_limit,
+            original_test_count=original_test_count,
+        ),
         "code",
         "train",
         index,

@@ -61,6 +61,12 @@ problem set. Outputs and count reports live under this run's `train_data/` and
 conversion rather than receiving fabricated labels or being silently dropped.
 Conversion does not execute test code. Actual scoring still uses the existing
 local Python verifier, whose resource guards are NOT a security sandbox.
+Dependent assertion snippets (shared definitions, setup or helper calls) run as
+one ordered suite with an aggregate one-second-per-source-snippet time budget.
+All source snippets are retained, with `original_test_count` in the test payload.
+Simple independent assertions remain separate. For grouped suites, accuracy is
+suite-level (all-or-nothing), while the configured sparse reward remains 1 only
+when all checks pass; feedback stops at the first failure within that suite.
 
 Validation runs only at each task's final step, with at most 32 candidate rows
 from the combined cumulative pool and one response each. This is not stratified

@@ -53,6 +53,39 @@ def test_dolci_rejects_ambiguous_stdio_payload(value, field):
         format_dolci(dict(dataset=["code_stdio"], ground_truth=[json.dumps([test])], prompt="q"), 0)
 
 
+def test_shared_helper_calls_form_one_ordered_suite():
+    snippets = [
+        "def run_case(x):\n    assert candidate(x) == x\nrun_case(1)",
+        "run_case(2)",
+        "run_case(3)",
+    ]
+    row = format_dolci(dict(dataset=["code"], ground_truth=[json.dumps(snippets)], prompt="q"), 2461)
+    tests = json.loads(row["reward_model"]["ground_truth"])
+    assert tests["inputs"] == ["\n\n".join(snippets)]
+    assert tests["time_limit"] == 3
+    assert tests["original_test_count"] == 3
+    # Only authored synthetic code is executed in this test, never dataset code.
+    exec(tests["inputs"][0], {"candidate": lambda x: x})
+    with pytest.raises(AssertionError):
+        exec(tests["inputs"][0], {"candidate": lambda x: x if x != 3 else -1})
+
+
+def test_shared_state_and_imports_preserve_order():
+    snippets = ["import math\nvalues = []", "values.append(candidate(4))", "assert values == [math.sqrt(4)]"]
+    row = format_dolci(dict(dataset=["code"], ground_truth=[json.dumps(snippets)], prompt="q"), 0)
+    tests = json.loads(row["reward_model"]["ground_truth"])
+    assert len(tests["inputs"]) == 1
+    exec(tests["inputs"][0], {"candidate": lambda x: 2})
+
+
+def test_independent_assertions_remain_separate():
+    snippets = ["assert f(1) == 1", "assert f(2) == 2"]
+    row = format_dolci(dict(dataset=["code"], ground_truth=[json.dumps(snippets)], prompt="q"), 0)
+    tests = json.loads(row["reward_model"]["ground_truth"])
+    assert tests["inputs"] == snippets
+    assert tests["time_limit"] is None
+
+
 def lcb_row(test):
     return dict(
         question_content="q",
