@@ -24,14 +24,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import re
 import shutil
+import tempfile
 from collections.abc import Iterable
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
-
 
 DEFAULT_WEIGHT_SUFFIXES = (
     "q_proj.weight",
@@ -119,9 +121,7 @@ class TensorSource:
             del state
             self.index_name = None
         else:
-            raise FileNotFoundError(
-                f"No model.safetensors or pytorch_model.bin checkpoint found in {model_dir}"
-            )
+            raise FileNotFoundError(f"No model.safetensors or pytorch_model.bin checkpoint found in {model_dir}")
 
         self._bin_cache_name: str | None = None
         self._bin_cache: dict[str, torch.Tensor] | None = None
@@ -290,6 +290,74 @@ def _save_shard(tensors: dict[str, torch.Tensor], path: Path, checkpoint_format:
         torch.save(tensors, path)
 
 
+def _process_shards(
+    base_path: Path,
+    previous_path: Path,
+    raw_path: Path,
+    output: Path,
+    shard_names: list[str],
+    device: str,
+    suffixes: tuple[str, ...],
+    include_regex: str | None,
+    matrix_options: dict,
+) -> list[LayerCalibrationStats]:
+    """One worker owns its shards end-to-end; tensors never cross process IPC."""
+    if torch.device(device).type == "cuda":
+        torch.cuda.set_device(torch.device(device))
+    base_source = TensorSource(base_path)
+    previous_source = TensorSource(previous_path)
+    raw_source = TensorSource(raw_path)
+    pattern = re.compile(include_regex) if include_regex else None
+    stats = []
+    for shard_name in shard_names:
+        output_tensors = {}
+        print(f"SVC [{device}] processing {shard_name}", flush=True)
+        for name in raw_source.keys_in_shard(shard_name):
+            raw_tensor = raw_source.get_tensor(name)
+            selected = name.endswith(suffixes) or (pattern is not None and pattern.search(name) is not None)
+            if selected and raw_tensor.ndim == 2 and raw_tensor.is_floating_point():
+                calibrated, metrics = calibrate_matrix(
+                    base_source.get_tensor(name),
+                    previous_source.get_tensor(name),
+                    raw_tensor,
+                    device=device,
+                    **matrix_options,
+                )
+                stats.append(LayerCalibrationStats(name=name, shape=list(raw_tensor.shape), **metrics))
+                output_tensors[name] = calibrated.cpu()
+                print(f"SVC [{device}] calibrated {name}: gamma={metrics['gamma_mean']:.4f}", flush=True)
+            else:
+                output_tensors[name] = raw_tensor
+        _save_shard(output_tensors, output / shard_name, raw_source.format)
+        del output_tensors
+    return stats
+
+
+def _assign_shards(raw_path: Path, shard_names: list[str], count: int) -> list[list[str]]:
+    """Greedy size balancing; file bytes approximate work without loading weights."""
+    assignments = [[] for _ in range(count)]
+    loads = [0] * count
+    for name in sorted(shard_names, key=lambda name: (-(raw_path / name).stat().st_size, name)):
+        worker = min(range(count), key=lambda index: (loads[index], index))
+        assignments[worker].append(name)
+        loads[worker] += (raw_path / name).stat().st_size
+    return assignments
+
+
+def _validate_devices(devices: Iterable[str]) -> list[str]:
+    result = []
+    for value in devices:
+        device = torch.device(value.strip())
+        if device.type != "cuda" or device.index is None:
+            raise ValueError("--devices requires explicit CUDA devices, e.g. cuda:0,cuda:1")
+        if device.index >= torch.cuda.device_count():
+            raise ValueError(f"Device {device} is not visible; check CUDA_VISIBLE_DEVICES")
+        result.append(str(device))
+    if not result or len(set(result)) != len(result):
+        raise ValueError("--devices must be nonempty and contain no duplicates")
+    return result
+
+
 def calibrate_checkpoints(
     *,
     base_model: str,
@@ -303,12 +371,68 @@ def calibrate_checkpoints(
     strength: float = 0.5,
     eps: float = 1e-8,
     device: str = "cpu",
+    devices: Iterable[str] | None = None,
     include_suffixes: Iterable[str] = DEFAULT_WEIGHT_SUFFIXES,
     include_regex: str | None = None,
     cache_dir: str | None = None,
     seed: int = 0,
 ) -> list[LayerCalibrationStats]:
-    """Calibrate selected matrices from three Hugging Face checkpoints."""
+    """Publish a complete checkpoint only after all shard workers succeed.
+
+    ``devices`` enables spawned CUDA workers and takes precedence over ``device``.
+    Failed runs discard only their private staging directory, never user output.
+    """
+    output = Path(output_dir).expanduser().resolve()
+    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+        raise FileExistsError(f"Output directory is not empty: {output}")
+    worker_devices = _validate_devices(devices) if devices is not None else [device]
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{output.name}.svc-", dir=output.parent) as staging:
+        stats = _calibrate_checkpoints(
+            base_model=base_model,
+            previous_model=previous_model,
+            raw_model=raw_model,
+            output_dir=staging,
+            rank=rank,
+            oversample=oversample,
+            niter=niter,
+            alpha=alpha,
+            strength=strength,
+            eps=eps,
+            device=device,
+            worker_devices=worker_devices,
+            include_suffixes=include_suffixes,
+            include_regex=include_regex,
+            cache_dir=cache_dir,
+            seed=seed,
+        )
+        # Same-filesystem rename publishes the complete directory atomically.
+        # POSIX permits replacing an empty directory, but never a nonempty one.
+        Path(staging).rename(output)
+    print(f"SVC complete: {output}")
+    return stats
+
+
+def _calibrate_checkpoints(
+    *,
+    base_model,
+    previous_model,
+    raw_model,
+    output_dir,
+    rank,
+    oversample,
+    niter,
+    alpha,
+    strength,
+    eps,
+    device,
+    worker_devices,
+    include_suffixes,
+    include_regex,
+    cache_dir,
+    seed,
+) -> list[LayerCalibrationStats]:
+    """Build into private staging storage; only the parent writes metadata."""
 
     output = Path(output_dir).expanduser().resolve()
     if output.exists() and any(output.iterdir()):
@@ -318,6 +442,8 @@ def calibrate_checkpoints(
     base_path = _resolve_model_path(base_model, cache_dir)
     previous_path = _resolve_model_path(previous_model, cache_dir)
     raw_path = _resolve_model_path(raw_model, cache_dir)
+    if any(output.is_relative_to(source) for source in (base_path, previous_path, raw_path)):
+        raise ValueError("SVC output must be outside all input checkpoint directories")
     base_source = TensorSource(base_path)
     previous_source = TensorSource(previous_path)
     raw_source = TensorSource(raw_path)
@@ -337,13 +463,8 @@ def calibrate_checkpoints(
         )
 
     suffixes = tuple(suffix.strip() for suffix in include_suffixes if suffix.strip())
-    pattern = re.compile(include_regex) if include_regex else None
-
-    def selected(name: str, tensor: torch.Tensor) -> bool:
-        name_selected = name.endswith(suffixes) or (
-            pattern is not None and pattern.search(name) is not None
-        )
-        return name_selected and tensor.ndim == 2 and tensor.is_floating_point()
+    if include_regex:
+        re.compile(include_regex)
 
     _copy_auxiliary_files(raw_path, output)
     stats: list[LayerCalibrationStats] = []
@@ -352,49 +473,53 @@ def calibrate_checkpoints(
     print(f"SVC raw model:      {raw_path}")
     print(f"SVC output:         {output}")
 
-    for shard_index, shard_name in enumerate(raw_source.shard_names, start=1):
-        output_tensors: dict[str, torch.Tensor] = {}
-        shard_keys = raw_source.keys_in_shard(shard_name)
-        print(
-            f"[{shard_index}/{len(raw_source.shard_names)}] "
-            f"Processing {shard_name} ({len(shard_keys)} tensors)"
+    matrix_options = dict(
+        rank=rank, oversample=oversample, niter=niter, alpha=alpha, strength=strength, eps=eps, seed=seed
+    )
+    assignments = _assign_shards(raw_path, raw_source.shard_names, len(worker_devices))
+    active = [(dev, shards) for dev, shards in zip(worker_devices, assignments, strict=True) if shards]
+    if len(active) < len(worker_devices):
+        print(f"Warning: only {len(active)} shards/workers available for {len(worker_devices)} devices.")
+    if len(worker_devices) == 1:
+        stats = _process_shards(
+            base_path,
+            previous_path,
+            raw_path,
+            output,
+            raw_source.shard_names,
+            worker_devices[0],
+            suffixes,
+            include_regex,
+            matrix_options,
         )
-        for name in shard_keys:
-            raw_tensor = raw_source.get_tensor(name)
-            if selected(name, raw_tensor):
-                base_tensor = base_source.get_tensor(name)
-                previous_tensor = previous_source.get_tensor(name)
-                calibrated, layer_metrics = calibrate_matrix(
-                    base_tensor,
-                    previous_tensor,
-                    raw_tensor,
-                    rank=rank,
-                    oversample=oversample,
-                    niter=niter,
-                    alpha=alpha,
-                    strength=strength,
-                    eps=eps,
-                    device=device,
-                    seed=seed,
+    elif active:
+        # spawn, not fork: CUDA contexts must be initialized separately per process.
+        with ProcessPoolExecutor(max_workers=len(active), mp_context=multiprocessing.get_context("spawn")) as pool:
+            futures = [
+                pool.submit(
+                    _process_shards,
+                    base_path,
+                    previous_path,
+                    raw_path,
+                    output,
+                    shards,
+                    dev,
+                    suffixes,
+                    include_regex,
+                    matrix_options,
                 )
-                stats.append(
-                    LayerCalibrationStats(
-                        name=name,
-                        shape=list(raw_tensor.shape),
-                        **layer_metrics,
-                    )
-                )
-                print(
-                    f"  calibrated {name}: rank={layer_metrics['rank']} "
-                    f"gamma={layer_metrics['gamma_mean']:.4f} "
-                    f"relative_correction={layer_metrics['relative_correction_norm']:.4e}"
-                )
-                output_tensors[name] = calibrated.cpu()
-            else:
-                output_tensors[name] = raw_tensor
-
-        _save_shard(output_tensors, output / shard_name, raw_source.format)
-        del output_tensors
+                for dev, shards in active
+            ]
+            for future in futures:
+                stats.extend(future.result())
+    # Identical report ordering regardless of assignment or completion order.
+    order = {
+        name: index
+        for index, name in enumerate(
+            name for shard in raw_source.shard_names for name in raw_source.keys_in_shard(shard)
+        )
+    }
+    stats.sort(key=lambda item: order[item.name])
 
     if raw_source.index_name is not None:
         shutil.copy2(raw_path / raw_source.index_name, output / raw_source.index_name)
@@ -408,7 +533,9 @@ def calibrate_checkpoints(
         "niter": niter,
         "alpha": alpha,
         "strength": strength,
-        "device": device,
+        "device": worker_devices[0] if len(worker_devices) == 1 else "parallel",
+        "devices": worker_devices,
+        "shard_assignments": {dev: shards for dev, shards in zip(worker_devices, assignments, strict=True)},
         "seed": seed,
         "include_suffixes": list(suffixes),
         "include_regex": include_regex,
@@ -435,6 +562,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--strength", type=float, default=0.5, help="Interpolation from raw (0) to full SVC (1).")
     parser.add_argument("--eps", type=float, default=1e-8)
     parser.add_argument("--device", default="cpu", help="SVD compute device, e.g. cpu, cuda, or cuda:0.")
+    parser.add_argument(
+        "--devices", default=None, help="Comma-separated CUDA devices for shard-parallel SVC; overrides --device."
+    )
     parser.add_argument("--seed", type=int, default=0, help="Randomized SVD seed.")
     parser.add_argument(
         "--include-suffixes",
@@ -460,6 +590,7 @@ def main() -> None:
         strength=args.strength,
         eps=args.eps,
         device=args.device,
+        devices=args.devices.split(",") if args.devices is not None else None,
         include_suffixes=args.include_suffixes.split(","),
         include_regex=args.include_regex,
         cache_dir=args.cache_dir,

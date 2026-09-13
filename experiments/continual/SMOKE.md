@@ -7,12 +7,36 @@ RUN_PROFILE=smoke bash experiments/continual/run_sdpo_svc_cl.sh --dry-run
 RUN_PROFILE=smoke sbatch experiments/continual/run_sdpo_svc_cl.sh
 ```
 
+To opt into four-GPU shard-parallel SVC, without changing training settings:
+
+```bash
+RUN_PROFILE=smoke SVC_DEVICES=cuda:0,cuda:1,cuda:2,cuda:3 \
+  sbatch experiments/continual/run_sdpo_svc_cl.sh
+```
+
+`SVC_DEVICES` overrides `SVC_DEVICE`. These are logical device indices inside
+the Slurm allocation. Each spawned worker calibrates and writes distinct raw
+checkpoint shards. Shards are greedily balanced by file size, not exact compute
+cost; fewer than four shards cannot keep four GPUs busy. Single-file checkpoints
+use only one worker. CPU memory and filesystem bandwidth demand increase with
+parallelism; no fourfold end-to-end speedup is guaranteed. Check that training
+workers have released GPU memory before SVC begins.
+
+All workers write into a private sibling staging directory. The parent publishes
+the model directory only after every worker and metadata write succeeds. Normal
+exceptions remove the private staging directory and do not publish partial output;
+hard kills can leave hidden staging directories but no new final model directory.
+The report records requested devices and shard assignments. The matrix RNG seed
+is unchanged from single-device SVC and independent of worker scheduling; compare
+results with numerical tolerances, not bitwise equality across CPU and CUDA.
+
 Submission is a separate, explicit action. The profile does not submit itself.
 Use a clean shell or unset previous experiment overrides: explicit environment
 settings take precedence over the profile's shell defaults.
 
 Defaults: all four tasks, 2 updates per task, 8 prompts per global batch,
 4 responses per prompt, micro batch 1 per GPU on 4 GPUs (8 accumulation steps),
+24 CPU cores per job (Ray follows the Slurm CPU allocation),
 learning rate 1e-5, no warmup, Top-100 + tail distillation with alpha 0.5,
 EMA rate 0.05. Gradient checkpointing is disabled. Student prompt/response
 limits remain 2048/8192; teacher reprompt limit remains 10240 and max_model_len

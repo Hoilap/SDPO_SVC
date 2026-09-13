@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --mem=460000
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=24
 #SBATCH --output=logs/sdpo-svc-cl-%j.out
 #SBATCH --error=logs/sdpo-svc-cl-%j.err
 
@@ -160,6 +160,12 @@ SVC_NITER="${SVC_NITER:-2}"
 SVC_ALPHA="${SVC_ALPHA:-1.0}"
 SVC_STRENGTH="${SVC_STRENGTH:-0.5}"
 SVC_DEVICE="${SVC_DEVICE:-cpu}"
+# Optional comma-separated GPU list; takes precedence over SVC_DEVICE.
+SVC_DEVICES="${SVC_DEVICES:-}"
+svc_device_args=(--device "$SVC_DEVICE")
+if [[ -n "$SVC_DEVICES" ]]; then
+    svc_device_args=(--devices "$SVC_DEVICES")
+fi
 SVC_SEED="${SVC_SEED:-0}"
 
 if (( START_TASK < 0 || END_TASK >= ${#CL_TRAIN_DATASETS[@]} || START_TASK > END_TASK )); then
@@ -473,7 +479,7 @@ echo "Starting model:    $CURRENT_MODEL"
 echo "Task range:        $START_TASK..$END_TASK"
 echo "Output root:       $OUTPUT_ROOT"
 echo "Rollout:           n=$ROLLOUT_BATCH_SIZE tp=$ROLLOUT_TENSOR_PARALLEL_SIZE"
-echo "SVC:               rank=$SVC_RANK alpha=$SVC_ALPHA strength=$SVC_STRENGTH device=$SVC_DEVICE"
+echo "SVC:               rank=$SVC_RANK alpha=$SVC_ALPHA strength=$SVC_STRENGTH devices=${SVC_DEVICES:-$SVC_DEVICE}"
 echo "============================================================"
 
 for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
@@ -558,7 +564,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     train_cmd=(
         python3 -m verl.trainer.main_ppo
         --config-name "$CONFIG_NAME"
-        "ray_kwargs.ray_init.num_cpus=${SLURM_CPUS_PER_TASK:-32}"
+        "ray_kwargs.ray_init.num_cpus=${SLURM_CPUS_PER_TASK:-24}"
         "data.train_files=$train_files_override"
         "data.val_files=$val_files_override"
         "data.train_batch_size=$TRAIN_BATCH_SIZE"
@@ -628,7 +634,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         --niter "$SVC_NITER" \
         --alpha "$SVC_ALPHA" \
         --strength "$SVC_STRENGTH" \
-        --device "$SVC_DEVICE" \
+        "${svc_device_args[@]}" \
         --seed "$SVC_SEED" \
         --cache-dir "$HF_CACHE_DIR"
 
