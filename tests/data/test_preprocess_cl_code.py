@@ -35,6 +35,24 @@ def test_dolci_rejects_missing_tests():
         format_dolci(dict(dataset=["code"], ground_truth=['["pass"]'], prompt="q"), 0)
 
 
+def test_dolci_mixed_singleton_lists_preserve_all_102_tests():
+    payload = [{"input": ["123"], "output": ["123"], "type": "code"}]
+    payload += [{"input": str(i), "output": f"{i}\n", "type": "code"} for i in range(101)]
+    row = format_dolci(dict(dataset=["code_stdio"], ground_truth=[json.dumps(payload)], prompt="user: Echo"), 981)
+    tests = json.loads(row["reward_model"]["ground_truth"])
+    assert len(tests["inputs"]) == len(tests["outputs"]) == 102
+    assert tests["inputs"] == ["123"] + [str(i) for i in range(101)]
+    assert tests["outputs"] == ["123"] + [f"{i}\n" for i in range(101)]
+
+
+@pytest.mark.parametrize("value", [[], ["one", "two"], [123], [["123"]], None, 123])
+@pytest.mark.parametrize("field", ["input", "output"])
+def test_dolci_rejects_ambiguous_stdio_payload(value, field):
+    test = {"input": "123", "output": "123", field: value}
+    with pytest.raises(ValueError, match=f"test 0 {field}"):
+        format_dolci(dict(dataset=["code_stdio"], ground_truth=[json.dumps([test])], prompt="q"), 0)
+
+
 def lcb_row(test):
     return dict(
         question_content="q",

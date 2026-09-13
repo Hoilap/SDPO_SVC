@@ -55,6 +55,15 @@ def _row(prompt, tests, source, split, index):
     }
 
 
+def _stdio_text(value, location):
+    """Unwrap a single text payload without guessing multi-item list semantics."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list) and len(value) == 1 and isinstance(value[0], str):
+        return value[0]
+    raise ValueError(f"{location}: expected text or a singleton text list, got {type(value).__name__}")
+
+
 def format_dolci(row, index):
     labels = row.get("dataset")
     if labels not in (["code"], ["code_stdio"]):
@@ -66,11 +75,11 @@ def format_dolci(row, index):
     if not isinstance(tests, list) or not tests:
         raise ValueError(f"{index}: expected nonempty test list")
     if labels == ["code_stdio"]:
-        if not all(
-            isinstance(t, dict) and isinstance(t.get("input"), str) and isinstance(t.get("output"), str) for t in tests
-        ):
+        if not all(isinstance(t, dict) for t in tests):
             raise ValueError(f"{index}: malformed stdin tests")
-        inputs, outputs, testtype = [t["input"] for t in tests], [t["output"] for t in tests], "stdin"
+        inputs = [_stdio_text(t.get("input"), f"{index}: test {i} input") for i, t in enumerate(tests)]
+        outputs = [_stdio_text(t.get("output"), f"{index}: test {i} output") for i, t in enumerate(tests)]
+        testtype = "stdin"
     else:
         if not all(isinstance(t, str) and t.strip() for t in tests):
             raise ValueError(f"{index}: malformed assertion tests")
