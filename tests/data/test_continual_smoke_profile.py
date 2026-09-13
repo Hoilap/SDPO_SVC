@@ -71,6 +71,14 @@ class SmokeProfileTest(unittest.TestCase):
         self.assertIn("data.train_max_samples=17917", commands[0])
         self.assertIn("data.train_max_samples=-1", commands[1])
 
+    def test_code_stage_uses_normalized_train_and_eval(self):
+        command = self.commands(RUN_PROFILE="smoke")[-1]
+        train = next(arg for arg in command if arg.startswith("data.train_files="))
+        validation = next(arg for arg in command if arg.startswith("data.val_files="))
+        self.assertIn("train_data/dolci-code.parquet", train)
+        self.assertNotIn("train-00000", train)
+        self.assertIn("eval_data/livecodebench-v6.parquet", validation)
+
     def test_sample_limit_does_not_enlarge_math_unique_pool(self):
         commands = self.commands(TRAIN_SAMPLE_LIMIT="20000")
         self.assertIn("data.train_max_samples=17917", commands[0])

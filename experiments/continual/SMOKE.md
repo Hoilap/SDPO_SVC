@@ -51,6 +51,17 @@ with seed 42. At least 16 eligible rows per task are needed for both updates
 in the single epoch. This cap does not avoid reading source files or the
 existing full-file preflight checks, and never regenerates train/test splits.
 
+Code data is normalized before loader sampling. Dolci is a mixed-domain dataset:
+only `dataset=["code"]` and `["code_stdio"]` rows enter the code stage. Assertions
+and stdin/stdout test pairs become the existing verifier's `code` and `stdin`
+formats; non-code rows are counted and excluded. Raw LiveCodeBench is converted
+separately for evaluation, retaining public and private tests and its original
+problem set. Outputs and count reports live under this run's `train_data/` and
+`eval_data/`; source files are never overwritten. Invalid code test payloads fail
+conversion rather than receiving fabricated labels or being silently dropped.
+Conversion does not execute test code. Actual scoring still uses the existing
+local Python verifier, whose resource guards are NOT a security sandbox.
+
 Validation runs only at each task's final step, with at most 32 candidate rows
 from the combined cumulative pool and one response each. This is not stratified
 per benchmark and does not guarantee coverage of every reward backend. Overlong

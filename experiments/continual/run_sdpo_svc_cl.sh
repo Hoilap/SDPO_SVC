@@ -222,6 +222,17 @@ run_command() {
 append_external_eval_file() {
     local eval_file="$1"
     local benchmark data_source normalized_file preprocessor
+    if [[ "$eval_file" == */LiveCodeBench-v6/* ]]; then
+        normalized_file="$OUTPUT_ROOT/eval_data/livecodebench-v6.parquet"
+        preprocessor="$PROJECT_ROOT/data/preprocess_cl_code.py"
+        if [[ "$DRY_RUN" == true || ! -f "$normalized_file" \
+              || "$eval_file" -nt "$normalized_file" || "$preprocessor" -nt "$normalized_file" ]]; then
+            run_command python3 "$preprocessor" --kind lcb \
+                --input-files "$eval_file" --output-file "$normalized_file"
+        fi
+        EXTERNAL_EVAL_FILES+=("$(realpath -m "$normalized_file")")
+        return
+    fi
     preprocessor="$PROJECT_ROOT/data/preprocess_math_eval.py"
 
     case "$eval_file" in
@@ -359,6 +370,22 @@ resolve_dataset_files() {
         else
             echo "Configured training parquet pattern has no matches: $hinted_pattern" >&2
             exit 1
+        fi
+        if [[ "$dataset_dir" == "datasets/cl/code/Dolci-Think-RL-7B" ]]; then
+            local normalized_code="$OUTPUT_ROOT/train_data/dolci-code.parquet"
+            local code_preprocessor="$PROJECT_ROOT/data/preprocess_cl_code.py"
+            local refresh_code=false source_file
+            if [[ "$DRY_RUN" == true || ! -f "$normalized_code" || "$code_preprocessor" -nt "$normalized_code" ]]; then
+                refresh_code=true
+            fi
+            for source_file in "${TRAIN_FILES[@]}"; do
+                [[ "$source_file" -nt "$normalized_code" ]] && refresh_code=true
+            done
+            if [[ "$refresh_code" == true ]]; then
+                run_command python3 "$code_preprocessor" --kind dolci \
+                    --input-files "${TRAIN_FILES[@]}" --output-file "$normalized_code"
+            fi
+            TRAIN_FILES=("$normalized_code")
         fi
         # Train-only datasets obtain validation from CL_EXTERNAL_EVAL_GROUPS.
         return
