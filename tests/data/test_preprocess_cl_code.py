@@ -198,6 +198,11 @@ def test_streaming_conversion_filters_and_reports(tmp_path):
     convert([source], target, "dolci")
     assert pq.ParquetFile(source).metadata.num_rows == 4
     assert pq.ParquetFile(target).metadata.num_rows == 1
+    schema = pq.read_schema(target)
+    assert schema.field("data_source").type == pa.large_string()
+    assert schema.field("prompt").type == pa.large_list(
+        pa.struct([("role", pa.large_string()), ("content", pa.large_string())])
+    )
     report = json.loads(target.with_suffix(".report.json").read_text())
     assert report["counts"] == {
         "skipped_non_code": 1,

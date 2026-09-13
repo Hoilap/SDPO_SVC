@@ -239,18 +239,24 @@ def convert(input_files, output_file, kind):
         raise ValueError("Refusing to overwrite source data")
     schema = pa.schema(
         [
-            ("data_source", pa.string()),
-            ("ability", pa.string()),
-            ("prompt", pa.list_(pa.struct([("role", pa.string()), ("content", pa.string())]))),
-            ("reward_model", pa.struct([("style", pa.string()), ("ground_truth", pa.string())])),
+            ("data_source", pa.large_string()),
+            ("ability", pa.large_string()),
+            (
+                "prompt",
+                pa.large_list(pa.struct([("role", pa.large_string()), ("content", pa.large_string())])),
+            ),
+            (
+                "reward_model",
+                pa.struct([("style", pa.large_string()), ("ground_truth", pa.large_string())]),
+            ),
             (
                 "extra_info",
                 pa.struct(
                     [
-                        ("split", pa.string()),
-                        ("index", pa.string()),
-                        ("description", pa.string()),
-                        ("problem", pa.string()),
+                        ("split", pa.large_string()),
+                        ("index", pa.large_string()),
+                        ("description", pa.large_string()),
+                        ("problem", pa.large_string()),
                         ("elo", pa.null()),
                         ("achievement_prior", pa.int64()),
                     ]
