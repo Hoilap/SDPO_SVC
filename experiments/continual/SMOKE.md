@@ -67,6 +67,7 @@ Recognized oracles include Python `assert`, unittest-style `assert*` calls,
 `pytest.raises`/`assertRaises`, and explicit `raise AssertionError` checks.
 Dolci stdin tests are accepted in both JSON and its compressed plain-data
 pickle representation; pickle globals and persistent references are rejected.
+Decoded pickle payloads remain capped at 128 MiB.
 Compressed `code_stdio` rows containing list-valued input/output are excluded
 and reported separately because the source mixes stdin lines with functional
 arguments without retaining a reliable test-mode or function-name field.

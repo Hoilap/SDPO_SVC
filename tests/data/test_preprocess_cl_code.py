@@ -166,6 +166,13 @@ def test_private_pickle_cannot_import_or_execute_globals():
         decode_private_tests(value)
 
 
+def test_lcb_private_decode_error_includes_row_index():
+    raw = lcb_row(dict(input="1\n", output="2\n", testtype="stdin"))
+    raw["private_test_cases"] = "not-base64"
+    with pytest.raises(ValueError, match=r"^17: invalid LCB private tests"):
+        format_lcb(raw, 17)
+
+
 def test_streaming_conversion_filters_and_reports(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq

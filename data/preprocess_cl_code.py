@@ -14,6 +14,9 @@ from collections import Counter
 from pathlib import Path
 
 
+MAX_PICKLED_TEST_BYTES = 128 * 1024 * 1024
+
+
 class UnverifiableTestSuite(ValueError):
     """A syntactically valid suite with no observable correctness oracle."""
 
@@ -32,7 +35,7 @@ class DataOnlyUnpickler(pickle.Unpickler):
 
 def _decode_pickled_data(value):
     decoder = zlib.decompressobj()
-    decoded = decoder.decompress(base64.b64decode(value, validate=True), 64 * 1024 * 1024)
+    decoded = decoder.decompress(base64.b64decode(value, validate=True), MAX_PICKLED_TEST_BYTES)
     if not decoder.eof or decoder.unconsumed_tail:
         raise ValueError("Oversized or incomplete private-test payload")
     return DataOnlyUnpickler(io.BytesIO(decoded)).load()
@@ -180,7 +183,10 @@ def format_dolci(row, index):
 
 def format_lcb(row, index):
     public = json.loads(row["public_test_cases"])
-    private = decode_private_tests(row["private_test_cases"])
+    try:
+        private = decode_private_tests(row["private_test_cases"])
+    except ValueError as error:
+        raise ValueError(f"{index}: invalid LCB private tests: {error}") from error
     tests = public + private
     if not tests or not all(isinstance(t, dict) for t in tests):
         raise ValueError(f"{index}: missing LCB tests")
