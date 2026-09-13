@@ -67,6 +67,9 @@ Recognized oracles include Python `assert`, unittest-style `assert*` calls,
 `pytest.raises`/`assertRaises`, and explicit `raise AssertionError` checks.
 Dolci stdin tests are accepted in both JSON and its compressed plain-data
 pickle representation; pickle globals and persistent references are rejected.
+Compressed `code_stdio` rows containing list-valued input/output are excluded
+and reported separately because the source mixes stdin lines with functional
+arguments without retaining a reliable test-mode or function-name field.
 Dependent assertion snippets (shared definitions, setup or helper calls) run as
 one ordered suite with an aggregate one-second-per-source-snippet time budget.
 All source snippets are retained, with `original_test_count` in the test payload.

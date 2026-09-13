@@ -18,6 +18,10 @@ class UnverifiableTestSuite(ValueError):
     """A syntactically valid suite with no observable correctness oracle."""
 
 
+class UnsupportedTestSuite(ValueError):
+    """A suite whose execution mode cannot be represented without guessing."""
+
+
 class DataOnlyUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
         raise ValueError("Executable pickle globals are forbidden in test payloads")
@@ -44,13 +48,13 @@ def decode_private_tests(value):
 
 def decode_dolci_tests(value):
     try:
-        return json.loads(value)
+        return json.loads(value), False
     except json.JSONDecodeError:
         # Dolci's stdin subset also contains zlib/base64 encoded plain lists.
         payload = _decode_pickled_data(value)
         if not isinstance(payload, list):
             raise ValueError("Expected a test list inside Dolci test pickle")
-        return payload
+        return payload, True
 
 
 def _row(prompt, tests, source, split, index):
@@ -132,7 +136,7 @@ def format_dolci(row, index):
     ground_truth = row.get("ground_truth")
     if not isinstance(ground_truth, list) or len(ground_truth) != 1:
         raise ValueError(f"{index}: expected exactly one ground_truth payload")
-    tests = decode_dolci_tests(ground_truth[0])
+    tests, compressed = decode_dolci_tests(ground_truth[0])
     if not isinstance(tests, list) or not tests:
         raise ValueError(f"{index}: expected nonempty test list")
     original_test_count = len(tests)
@@ -140,6 +144,12 @@ def format_dolci(row, index):
     if labels == ["code_stdio"]:
         if not all(isinstance(t, dict) for t in tests):
             raise ValueError(f"{index}: malformed stdin tests")
+        if compressed and any(
+            not isinstance(t.get(field), str) for t in tests for field in ("input", "output")
+        ):
+            raise UnsupportedTestSuite(
+                f"{index}: compressed code_stdio suite has ambiguous stdin/functional list values"
+            )
         inputs = [_stdio_text(t.get("input"), f"{index}: test {i} input") for i, t in enumerate(tests)]
         outputs = [_stdio_text(t.get("output"), f"{index}: test {i} output") for i, t in enumerate(tests)]
         testtype = "stdin"
@@ -284,8 +294,13 @@ def convert(input_files, output_file, kind):
                             if kind == "dolci"
                             else format_lcb(row, index)
                         )
-                    except UnverifiableTestSuite as error:
-                        counts["skipped_unverifiable"] += 1
+                    except (UnverifiableTestSuite, UnsupportedTestSuite) as error:
+                        key = (
+                            "skipped_unverifiable"
+                            if isinstance(error, UnverifiableTestSuite)
+                            else "skipped_unsupported_stdio"
+                        )
+                        counts[key] += 1
                         if len(filtered_examples) < 20:
                             filtered_examples.append(str(error))
                         continue
@@ -314,11 +329,17 @@ def convert(input_files, output_file, kind):
         max_tests=max_tests,
     )
     if kind == "dolci":
-        code_candidates = retained + counts["skipped_unverifiable"]
+        filtered_total = counts["skipped_unverifiable"] + counts["skipped_unsupported_stdio"]
+        code_candidates = retained + filtered_total
         report.update(
             code_candidates=code_candidates,
             filtered_unverifiable=counts["skipped_unverifiable"],
-            filtered_fraction=(counts["skipped_unverifiable"] / code_candidates if code_candidates else 0.0),
+            filtered_unverifiable_fraction=(
+                counts["skipped_unverifiable"] / code_candidates if code_candidates else 0.0
+            ),
+            filtered_unsupported_stdio=counts["skipped_unsupported_stdio"],
+            filtered_total=filtered_total,
+            filtered_fraction=(filtered_total / code_candidates if code_candidates else 0.0),
             filtered_examples=filtered_examples,
         )
     output.with_suffix(".report.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -5,7 +5,14 @@ import zlib
 
 import pytest
 
-from data.preprocess_cl_code import UnverifiableTestSuite, convert, decode_private_tests, format_dolci, format_lcb
+from data.preprocess_cl_code import (
+    UnsupportedTestSuite,
+    UnverifiableTestSuite,
+    convert,
+    decode_private_tests,
+    format_dolci,
+    format_lcb,
+)
 
 
 def encoded(tests):
@@ -71,6 +78,14 @@ def test_dolci_decodes_compressed_stdio_test_lists():
     tests = json.loads(row["reward_model"]["ground_truth"])
     assert tests["inputs"] == ["1 2\n"]
     assert tests["outputs"] == ["3\n"]
+
+
+def test_dolci_rejects_ambiguous_compressed_stdio_lists():
+    payload = [{"input": [[1, 2], [1]], "output": [[2]]}]
+    with pytest.raises(UnsupportedTestSuite, match="ambiguous stdin/functional"):
+        format_dolci(
+            dict(dataset=["code_stdio"], ground_truth=[encoded_object(payload)], prompt="user: Difference"), 1
+        )
 
 
 @pytest.mark.parametrize("value", [[], ["one", "two"], [123], [["123"]], None, 123])
@@ -162,6 +177,11 @@ def test_streaming_conversion_filters_and_reports(tmp_path):
                 dict(dataset=["math"], ground_truth=["42"], prompt="user: math"),
                 dict(dataset=["code"], ground_truth=['["assert f() == 1"]'], prompt="user: code"),
                 dict(dataset=["code"], ground_truth=['["def f(): pass", "f()"]'], prompt="user: no oracle"),
+                dict(
+                    dataset=["code_stdio"],
+                    ground_truth=[encoded_object([{"input": [[1]], "output": [[1]]}])],
+                    prompt="user: ambiguous mode",
+                ),
             ]
         ),
         source,
@@ -169,15 +189,26 @@ def test_streaming_conversion_filters_and_reports(tmp_path):
     )
     target = tmp_path / "converted.parquet"
     convert([source], target, "dolci")
-    assert pq.ParquetFile(source).metadata.num_rows == 3
+    assert pq.ParquetFile(source).metadata.num_rows == 4
     assert pq.ParquetFile(target).metadata.num_rows == 1
     report = json.loads(target.with_suffix(".report.json").read_text())
-    assert report["counts"] == {"skipped_non_code": 1, "code": 1, "skipped_unverifiable": 1}
+    assert report["counts"] == {
+        "skipped_non_code": 1,
+        "code": 1,
+        "skipped_unverifiable": 1,
+        "skipped_unsupported_stdio": 1,
+    }
     assert report["retained"] == 1
-    assert report["code_candidates"] == 2
+    assert report["code_candidates"] == 3
     assert report["filtered_unverifiable"] == 1
-    assert report["filtered_fraction"] == 0.5
-    assert report["filtered_examples"] == ["raw.parquet:1: test suite has no correctness oracle"]
+    assert report["filtered_unverifiable_fraction"] == pytest.approx(1 / 3)
+    assert report["filtered_unsupported_stdio"] == 1
+    assert report["filtered_total"] == 2
+    assert report["filtered_fraction"] == pytest.approx(2 / 3)
+    assert report["filtered_examples"] == [
+        "raw.parquet:1: test suite has no correctness oracle",
+        "raw.parquet:2: compressed code_stdio suite has ambiguous stdin/functional list values",
+    ]
 
 
 def test_bad_conversion_does_not_publish(tmp_path):
