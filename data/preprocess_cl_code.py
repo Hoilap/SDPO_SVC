@@ -14,6 +14,10 @@ from collections import Counter
 from pathlib import Path
 
 
+class UnverifiableTestSuite(ValueError):
+    """A syntactically valid suite with no observable correctness oracle."""
+
+
 class DataOnlyUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
         raise ValueError("Executable pickle globals are forbidden in test payloads")
@@ -64,11 +68,38 @@ def _stdio_text(value, location):
     raise ValueError(f"{location}: expected text or a singleton text list, got {type(value).__name__}")
 
 
+def _call_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _call_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    return ""
+
+
+def _verification_signal(tree):
+    """Recognize executable Python checks without running dataset code."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assert):
+            return "assert"
+        if isinstance(node, ast.Raise) and node.exc is not None:
+            exception = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+            if _call_name(exception).endswith("AssertionError"):
+                return "raise AssertionError"
+        if isinstance(node, ast.Call):
+            name = _call_name(node.func)
+            leaf = name.rsplit(".", 1)[-1]
+            if leaf.startswith("assert") or leaf == "raises":
+                return name
+    return None
+
+
 def _assertion_suite(tests, index):
     """Keep dependent snippets in one namespace instead of inventing setup."""
     trees = [ast.parse(test) for test in tests]
-    if not any(isinstance(node, ast.Assert) for tree in trees for node in ast.walk(tree)):
-        raise ValueError(f"{index}: test suite has no assertion")
+    signals = [signal for tree in trees if (signal := _verification_signal(tree))]
+    if not signals:
+        raise UnverifiableTestSuite(f"{index}: test suite has no correctness oracle")
     independent = all(tree.body and all(isinstance(node, ast.Assert) for node in tree.body) for tree in trees)
     if independent:
         return tests, None
@@ -198,6 +229,7 @@ def convert(input_files, output_file, kind):
     )
     counts = Counter()
     max_tests = 0
+    filtered_examples = []
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".code-convert-", dir=output.parent) as staging:
         temp = Path(staging) / "data.parquet"
@@ -231,7 +263,17 @@ def convert(input_files, output_file, kind):
 
                     iterator = rows()
                 for index, row in enumerate(iterator):
-                    sample = format_dolci(row, f"{source.name}:{index}") if kind == "dolci" else format_lcb(row, index)
+                    try:
+                        sample = (
+                            format_dolci(row, f"{source.name}:{index}")
+                            if kind == "dolci"
+                            else format_lcb(row, index)
+                        )
+                    except UnverifiableTestSuite as error:
+                        counts["skipped_unverifiable"] += 1
+                        if len(filtered_examples) < 20:
+                            filtered_examples.append(str(error))
+                        continue
                     if sample is None:
                         counts["skipped_non_code"] += 1
                         continue
@@ -244,7 +286,7 @@ def convert(input_files, output_file, kind):
                         buffer.clear()
             if buffer:
                 writer.write_table(pa.Table.from_pylist(buffer, schema=schema))
-        retained = sum(value for key, value in counts.items() if key != "skipped_non_code")
+        retained = counts["code"] + counts["stdin"]
         if retained == 0:
             raise ValueError("No usable code rows; no output published")
         temp.replace(output)
@@ -256,6 +298,14 @@ def convert(input_files, output_file, kind):
         retained=retained,
         max_tests=max_tests,
     )
+    if kind == "dolci":
+        code_candidates = retained + counts["skipped_unverifiable"]
+        report.update(
+            code_candidates=code_candidates,
+            filtered_unverifiable=counts["skipped_unverifiable"],
+            filtered_fraction=(counts["skipped_unverifiable"] / code_candidates if code_candidates else 0.0),
+            filtered_examples=filtered_examples,
+        )
     output.with_suffix(".report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)
 

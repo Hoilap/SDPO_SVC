@@ -61,6 +61,10 @@ problem set. Outputs and count reports live under this run's `train_data/` and
 conversion rather than receiving fabricated labels or being silently dropped.
 Conversion does not execute test code. Actual scoring still uses the existing
 local Python verifier, whose resource guards are NOT a security sandbox.
+Syntactically valid assertion suites without an observable correctness oracle
+are excluded and reported separately with their fraction among code candidates.
+Recognized oracles include Python `assert`, unittest-style `assert*` calls,
+`pytest.raises`/`assertRaises`, and explicit `raise AssertionError` checks.
 Dependent assertion snippets (shared definitions, setup or helper calls) run as
 one ordered suite with an aggregate one-second-per-source-snippet time budget.
 All source snippets are retained, with `original_test_count` in the test payload.
