@@ -10,9 +10,9 @@ checkpoint export, and SVC logic remain in one place.
 | `try.sh` | At most 3,000 candidates | Full one-epoch settings | `outputs/sdpo_svc_cl_try/<job-id>` |
 | `full.sh` | Manifest-defined full data | Full one-epoch settings | `outputs/sdpo_svc_cl` |
 
-The try and full profiles use an actor PPO micro batch size of 4 per GPU.
-Smoke keeps 2 per GPU so its global mini batch of 8 remains divisible across
-the four training GPUs.
+All profiles use an actor PPO micro batch size of 2 per GPU.  Try and full keep
+their global and PPO mini batch sizes at 32, using gradient accumulation to
+reduce peak GPU memory.
 
 ```bash
 sbatch experiments/continual/smoke.sh
