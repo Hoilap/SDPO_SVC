@@ -105,6 +105,7 @@ def test_spawned_workers_match_serial_and_preserve_metadata(tmp_path, monkeypatc
     assert (parallel / actual_source.index_name).read_text() == (serial / expected_source.index_name).read_text()
     report = json.loads((parallel / "svc_report.json").read_text())
     assert report["num_calibrated_layers"] == 5
+    assert report["elapsed_seconds"] > 0
     assert not list(tmp_path.glob(".parallel.svc-*"))
 
 

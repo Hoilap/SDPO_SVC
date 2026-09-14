@@ -10,7 +10,8 @@
 #SBATCH --output=logs/sdpo-svc-cl-%j.out
 #SBATCH --error=logs/sdpo-svc-cl-%j.err
 
-# Sequential SDPO + task-boundary Singular Value Calibration (SVC).
+# Shared sequential SDPO + task-boundary Singular Value Calibration (SVC)
+# engine. Prefer the smoke.sh, try.sh, and full.sh profile entry points.
 #
 # Run this script directly on an allocated compute node.  It executes all task
 # boundaries sequentially in the current 4-GPU allocation:
@@ -90,23 +91,33 @@ fi
 
 # Training configuration.  BASE_MODEL remains the common SVC anchor throughout
 # the curriculum; CURRENT_MODEL advances after every calibrated task boundary.
-# Opt-in integration smoke test; production defaults below remain unchanged.
-RUN_PROFILE="${RUN_PROFILE:-production}"
+# Profile entry points select data scale. Keep ``production`` as a backwards-
+# compatible alias for callers that predate full.sh.
+RUN_PROFILE="${RUN_PROFILE:-full}"
 case "$RUN_PROFILE" in
-    production) ;;
+    full|production)
+        PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-4}"
+        ;;
+    try)
+        CONFIG_NAME="${CONFIG_NAME:-sdpo}"
+        OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/sdpo_svc_cl_try/${SLURM_JOB_ID:-manual}}"
+        TRAIN_SAMPLE_LIMIT="${TRAIN_SAMPLE_LIMIT:-3000}"
+        PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-4}"
+        ;;
     smoke)
         CONFIG_NAME="${CONFIG_NAME:-sdpo_smoke}"
         OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/sdpo_svc_cl_smoke/${SLURM_JOB_ID:-manual}}"
         TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-2}"
         TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-8}"
         PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-8}"
+        PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-2}"
         TRAIN_SAMPLE_LIMIT="${TRAIN_SAMPLE_LIMIT:-128}"
         VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-4}"
         VAL_ROLLOUT_BATCH_SIZE="${VAL_ROLLOUT_BATCH_SIZE:-1}"
         LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-0}"
         TEST_FREQ="${TEST_FREQ:-1000000000}"
         ;;
-    *) echo "Unknown RUN_PROFILE=$RUN_PROFILE (expected production or smoke)" >&2; exit 2 ;;
+    *) echo "Unknown RUN_PROFILE=$RUN_PROFILE (expected smoke, try, or full)" >&2; exit 2 ;;
 esac
 BASE_MODEL="${BASE_MODEL:-../model/Qwen3-4B-Instruct-2507}"
 CURRENT_MODEL="${INITIAL_CONTINUAL_MODEL:-$BASE_MODEL}"
@@ -115,6 +126,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/sdpo_svc_cl}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-$OUTPUT_ROOT/checkpoints}"
 HF_ROOT="${HF_ROOT:-$OUTPUT_ROOT/hf_models}"
 HF_CACHE_DIR="${HF_CACHE_DIR:-$OUTPUT_ROOT/hf_cache}"
+EVAL_RESULT_ROOT="${EVAL_RESULT_ROOT:-$OUTPUT_ROOT/evaluation}"
 export WANDB_DIR="${WANDB_DIR:-$OUTPUT_ROOT/wandb}"
 
 START_TASK="${START_TASK:-0}"
@@ -127,6 +139,7 @@ TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-32}"
 ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-4}"
 ROLLOUT_TENSOR_PARALLEL_SIZE="${ROLLOUT_TENSOR_PARALLEL_SIZE:-2}"
 PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-32}"
+PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-4}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-8}"
 VAL_ROLLOUT_BATCH_SIZE="${VAL_ROLLOUT_BATCH_SIZE:-16}"
 # Reward-manager response dumps are extremely verbose because this limit is
@@ -190,7 +203,7 @@ if (( START_TASK > 0 )) && [[ -z "${INITIAL_CONTINUAL_MODEL:-}" ]]; then
 fi
 if [[ "$DRY_RUN" != true && "$PREFLIGHT_ONLY" != true && -z "${SLURM_JOB_ID:-}" ]]; then
     echo "This script must be submitted through Slurm." >&2
-    echo "Run: sbatch experiments/continual/run_sdpo_svc_cl.sh" >&2
+    echo "Run one of: sbatch experiments/continual/{smoke,try,full}.sh" >&2
     exit 2
 fi
 if [[ "$DRY_RUN" != true && -n "${SLURM_GPUS_ON_NODE:-}" \
@@ -503,8 +516,10 @@ echo "============================================================"
 echo "Sequential SDPO + SVC"
 echo "Base anchor:       $BASE_MODEL"
 echo "Starting model:    $CURRENT_MODEL"
+echo "Profile:           $RUN_PROFILE"
 echo "Task range:        $START_TASK..$END_TASK"
 echo "Output root:       $OUTPUT_ROOT"
+echo "Actor batch:       global=$TRAIN_BATCH_SIZE mini=$PPO_MINI_BATCH_SIZE micro-per-gpu=$PPO_MICRO_BATCH_SIZE_PER_GPU"
 echo "Rollout:           n=$ROLLOUT_BATCH_SIZE tp=$ROLLOUT_TENSOR_PARALLEL_SIZE"
 echo "SVC:               rank=$SVC_RANK alpha=$SVC_ALPHA strength=$SVC_STRENGTH devices=${SVC_DEVICES:-$SVC_DEVICE}"
 echo "============================================================"
@@ -520,6 +535,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     task_number="$(printf '%02d' "$((task_index + 1))")"
     experiment_name="SDPO-SVC-CL-${task_number}-${dataset_name}"
     task_checkpoint_dir="$CHECKPOINT_ROOT/$experiment_name"
+    task_eval_dir="$EVAL_RESULT_ROOT/$experiment_name"
     raw_hf_dir="$HF_ROOT/${task_number}-${dataset_name}-raw"
     calibrated_hf_dir="$HF_ROOT/${task_number}-${dataset_name}-svc"
 
@@ -609,6 +625,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "actor_rollout_ref.actor.optim.lr=$LEARNING_RATE"
         "actor_rollout_ref.actor.optim.lr_warmup_steps=$LR_WARMUP_STEPS"
         "actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH_SIZE"
+        "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_SIZE_PER_GPU"
         "actor_rollout_ref.rollout.n=$ROLLOUT_BATCH_SIZE"
         "actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TENSOR_PARALLEL_SIZE"
         "actor_rollout_ref.rollout.val_kwargs.n=$VAL_ROLLOUT_BATCH_SIZE"
@@ -623,6 +640,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "trainer.total_epochs=$TOTAL_EPOCHS"
         "trainer.total_training_steps=$TOTAL_TRAINING_STEPS"
         "trainer.val_reward_num_examine=$VAL_REWARD_NUM_EXAMINE"
+        "trainer.validation_data_dir=$task_eval_dir"
         "trainer.save_freq=1000000000"
         "trainer.max_actor_ckpt_to_keep=1"
         "trainer.test_freq=$TEST_FREQ"

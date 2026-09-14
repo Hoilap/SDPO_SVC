@@ -28,6 +28,7 @@ import multiprocessing
 import re
 import shutil
 import tempfile
+import time
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
@@ -434,6 +435,7 @@ def _calibrate_checkpoints(
 ) -> list[LayerCalibrationStats]:
     """Build into private staging storage; only the parent writes metadata."""
 
+    started_at = time.perf_counter()
     output = Path(output_dir).expanduser().resolve()
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"Output directory is not empty: {output}")
@@ -540,6 +542,7 @@ def _calibrate_checkpoints(
         "include_suffixes": list(suffixes),
         "include_regex": include_regex,
         "num_calibrated_layers": len(stats),
+        "elapsed_seconds": time.perf_counter() - started_at,
         "layers": [asdict(item) for item in stats],
     }
     (output / "svc_report.json").write_text(json.dumps(report, indent=2) + "\n")

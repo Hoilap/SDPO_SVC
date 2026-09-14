@@ -485,6 +485,31 @@ class RayPPOTrainer:
 
         print(f"Dumped generations to {filename}")
 
+    def _dump_validation_metrics(self, metrics, num_samples, dump_path):
+        """Dump aggregate validation metrics next to the sample generations."""
+        os.makedirs(dump_path, exist_ok=True)
+        filename = os.path.join(dump_path, f"{self.global_steps}.metrics.json")
+
+        def json_default(value):
+            if isinstance(value, np.generic):
+                return value.item()
+            if isinstance(value, np.ndarray):
+                return value.tolist()
+            if torch.is_tensor(value):
+                return value.detach().cpu().tolist()
+            raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+        payload = {
+            "step": self.global_steps,
+            "num_samples": num_samples,
+            "metrics": metrics,
+        }
+        with open(filename, "w") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True, default=json_default)
+            f.write("\n")
+
+        print(f"Dumped validation metrics to {filename}")
+
     def _log_rollout_data(
         self, batch: DataProto, reward_extra_infos_dict: dict, timing_raw: dict, rollout_data_dir: str
     ):
@@ -921,15 +946,21 @@ class RayPPOTrainer:
 
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
-        # dump generations
+        data_sources = np.concatenate(data_source_lst, axis=0)
+
+        # Dump generations with stable sample identifiers and dataset labels so
+        # mixed-domain validation results can be inspected without W&B.
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
         if val_data_dir:
+            dump_extra_infos_dict = dict(reward_extra_infos_dict)
+            dump_extra_infos_dict["data_source"] = data_sources.tolist()
+            dump_extra_infos_dict["uid"] = sample_uids
             self._dump_generations(
                 inputs=sample_inputs,
                 outputs=sample_outputs,
                 gts=sample_gts,
                 scores=sample_scores,
-                reward_extra_infos_dict=reward_extra_infos_dict,
+                reward_extra_infos_dict=dump_extra_infos_dict,
                 dump_path=val_data_dir,
             )
 
@@ -944,8 +975,10 @@ class RayPPOTrainer:
                 "sample_turns": sample_turns,
                 "reward_extra_infos_dict": reward_extra_infos_dict,
             }
-        data_sources = np.concatenate(data_source_lst, axis=0)
-        return self._val_metrics_update(data_sources, sample_uids, reward_extra_infos_dict, sample_turns)
+        metrics = self._val_metrics_update(data_sources, sample_uids, reward_extra_infos_dict, sample_turns)
+        if val_data_dir:
+            self._dump_validation_metrics(metrics, len(sample_scores), val_data_dir)
+        return metrics
 
     def _val_metrics_update(self, data_sources, sample_uids, reward_extra_infos_dict, sample_turns):
         data_src2var2metric2val = process_validation_metrics(data_sources, sample_uids, reward_extra_infos_dict)

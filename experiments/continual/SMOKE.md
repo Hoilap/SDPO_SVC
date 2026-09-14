@@ -3,15 +3,15 @@
 From the repository root, with the normal `sdpo` environment activated:
 
 ```bash
-RUN_PROFILE=smoke bash experiments/continual/run_sdpo_svc_cl.sh --dry-run
-RUN_PROFILE=smoke sbatch experiments/continual/run_sdpo_svc_cl.sh
+bash experiments/continual/smoke.sh --dry-run
+sbatch experiments/continual/smoke.sh
 ```
 
 To opt into four-GPU shard-parallel SVC, without changing training settings:
 
 ```bash
-RUN_PROFILE=smoke SVC_DEVICES=cuda:0,cuda:1,cuda:2,cuda:3 \
-  sbatch experiments/continual/run_sdpo_svc_cl.sh
+SVC_DEVICES=cuda:0,cuda:1,cuda:2,cuda:3 \
+  sbatch experiments/continual/smoke.sh
 ```
 
 `SVC_DEVICES` overrides `SVC_DEVICE`. These are logical device indices inside
@@ -44,6 +44,11 @@ remains 18944. All length limits and derived token budgets are inherited from
 the production configuration without overrides. SVC is unchanged
 (rank 64, strength 0.5, CPU by default), as are model export and model handoff.
 Outputs default to `outputs/sdpo_svc_cl_smoke/<Slurm job ID>`.
+Each task also writes validation generations and per-sample scores to
+`evaluation/<experiment-name>/<step>.jsonl`, plus aggregate metrics and the
+evaluated sample count to the adjacent `<step>.metrics.json`.  The JSONL records
+include the validation data source and sample UID for mixed-domain analysis.
+The SVC report records its wall-clock runtime in `elapsed_seconds`.
 
 The loader caps each task at 128 candidate training rows before prompt-length
 filtering. Math retains its ordered unique-prefix policy; other tasks sample

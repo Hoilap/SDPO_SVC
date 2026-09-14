@@ -11,15 +11,18 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "experiments/continual/run_sdpo_svc_cl.sh"
+SMOKE_RUNNER = ROOT / "experiments/continual/smoke.sh"
+TRY_RUNNER = ROOT / "experiments/continual/try.sh"
+FULL_RUNNER = ROOT / "experiments/continual/full.sh"
 
 
 class SmokeProfileTest(unittest.TestCase):
-    def commands(self, module="verl.trainer.main_ppo", **overrides):
+    def commands(self, module="verl.trainer.main_ppo", runner=RUNNER, **overrides):
         with tempfile.TemporaryDirectory(prefix="sdpo-profile-test-") as output:
             env = {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
             env.update(OUTPUT_ROOT=output, **overrides)
             result = subprocess.run(
-                ["bash", str(RUNNER), "--dry-run"],
+                ["bash", str(runner), "--dry-run"],
                 cwd=ROOT,
                 env=env,
                 text=True,
@@ -61,6 +64,29 @@ class SmokeProfileTest(unittest.TestCase):
             ):
                 self.assertIn(value, command)
 
+    def test_profile_entry_points_select_expected_data_scale(self):
+        smoke_commands = self.commands(runner=SMOKE_RUNNER)
+        try_commands = self.commands(runner=TRY_RUNNER)
+        full_commands = self.commands(runner=FULL_RUNNER)
+
+        self.assertEqual(len(smoke_commands), 4)
+        self.assertEqual(len(try_commands), 4)
+        self.assertEqual(len(full_commands), 4)
+        for command in smoke_commands:
+            self.assertIn("data.train_max_samples=128", command)
+            self.assertIn("trainer.total_training_steps=2", command)
+            self.assertIn("actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2", command)
+        for command in try_commands:
+            self.assertIn("data.train_max_samples=3000", command)
+            self.assertIn("trainer.total_training_steps=null", command)
+            self.assertIn("data.train_batch_size=32", command)
+            self.assertIn("actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4", command)
+        self.assertIn("data.train_max_samples=17917", full_commands[0])
+        for command in full_commands[1:]:
+            self.assertIn("data.train_max_samples=-1", command)
+        for command in full_commands:
+            self.assertIn("actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4", command)
+
     def test_production_defaults_unchanged(self):
         commands = self.commands()
         for command in commands:
@@ -78,6 +104,13 @@ class SmokeProfileTest(unittest.TestCase):
         self.assertIn("train_data/dolci-code.parquet", train)
         self.assertNotIn("train-00000", train)
         self.assertIn("eval_data/livecodebench-v6.parquet", validation)
+
+    def test_validation_artifacts_are_persisted_per_task(self):
+        commands = self.commands(RUN_PROFILE="smoke")
+        for task_number, command in enumerate(commands, start=1):
+            setting = next(arg for arg in command if arg.startswith("trainer.validation_data_dir="))
+            self.assertIn("/evaluation/SDPO-SVC-CL-", setting)
+            self.assertIn(f"-{task_number:02d}-", setting)
 
     def test_sample_limit_does_not_enlarge_math_unique_pool(self):
         commands = self.commands(TRAIN_SAMPLE_LIMIT="20000")
