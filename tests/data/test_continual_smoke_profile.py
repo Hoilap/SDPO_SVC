@@ -75,17 +75,17 @@ class SmokeProfileTest(unittest.TestCase):
         for command in smoke_commands:
             self.assertIn("data.train_max_samples=128", command)
             self.assertIn("trainer.total_training_steps=2", command)
-            self.assertIn("actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2", command)
+            self.assertIn("actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1", command)
         for command in try_commands:
             self.assertIn("data.train_max_samples=3000", command)
             self.assertIn("trainer.total_training_steps=null", command)
             self.assertIn("data.train_batch_size=32", command)
-            self.assertIn("actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2", command)
+            self.assertIn("actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1", command)
         self.assertIn("data.train_max_samples=17917", full_commands[0])
         for command in full_commands[1:]:
             self.assertIn("data.train_max_samples=-1", command)
         for command in full_commands:
-            self.assertIn("actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2", command)
+            self.assertIn("actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1", command)
 
     def test_production_defaults_unchanged(self):
         commands = self.commands()
