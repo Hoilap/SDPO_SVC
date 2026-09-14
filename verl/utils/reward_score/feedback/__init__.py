@@ -25,9 +25,11 @@ def compute_score(
         raise ValueError(f"Reward style {data_source} not found.")
 
     # Validation can mix datasets whose scorers expose different auxiliary
-    # fields. Keep truncation metadata present for every sample so the trainer
-    # can align each metric with the corresponding reward.
+    # fields. Keep shared metadata present for every sample so the trainer can
+    # align each metric with the corresponding reward.
     was_truncated = bool((extra_info or {}).get("truncated", False))
+    results.setdefault("error_in_test_cases", 0)
+    results.setdefault("timed_out", 0)
     results.setdefault("truncated", int(was_truncated))
     results.setdefault(
         "truncated_and_missing_answer",
