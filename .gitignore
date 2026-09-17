@@ -133,3 +133,12 @@ outputs
 other_implementation
 Dockerfile.gh200-ofi
 DOCKER_PLAN_GH200.md
+
+# Keep compact continual-evaluation summaries while ignoring models, datasets,
+# per-sample generations, and other large runtime outputs.
+!outputs/
+outputs/*
+!outputs/sdpo_svc_cl_try/
+outputs/sdpo_svc_cl_try/**
+!outputs/sdpo_svc_cl_try/**/
+!outputs/sdpo_svc_cl_try/*/evaluation/*/*.metrics.json
