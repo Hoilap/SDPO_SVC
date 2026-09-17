@@ -6,6 +6,7 @@ import faulthandler
 import io
 import json
 import multiprocessing
+import os
 import re
 import sys
 import time
@@ -20,6 +21,8 @@ TIMEOUT = "Time out"
 ERROR_PREFIX = "Error: "
 OUTER_ERROR_PREFIX = "ERROR: "
 MAX_ADDITIONAL_MEMORY_BYTES = 1024 * 1024 * 1024  # 1GB
+DEFAULT_MAX_CONCURRENT_TEST_PROCESSES = 8
+MAX_CONCURRENCY_ENV_VAR = "CODE_REWARD_MAX_CONCURRENCY"
 DEFAULT_TIMEOUT = 1
 TIMEOUT_SCALER = 1.0
 FORMAT_PENALTY = False
@@ -69,6 +72,28 @@ def set_memory_limits(maximum_memory_bytes: Optional[int]) -> None:
     except Exception:
         print("Failed to set memory limits")
         pass
+
+
+def _get_max_concurrent_test_processes() -> int:
+    """Return the configured per-completion test-process concurrency limit."""
+    raw_value = os.environ.get(MAX_CONCURRENCY_ENV_VAR)
+    if raw_value is None:
+        return DEFAULT_MAX_CONCURRENT_TEST_PROCESSES
+
+    try:
+        value = int(raw_value)
+    except ValueError:
+        print(
+            f"Ignoring invalid {MAX_CONCURRENCY_ENV_VAR}={raw_value!r}; using {DEFAULT_MAX_CONCURRENT_TEST_PROCESSES}."
+        )
+        return DEFAULT_MAX_CONCURRENT_TEST_PROCESSES
+
+    if value < 1:
+        print(
+            f"Ignoring invalid {MAX_CONCURRENCY_ENV_VAR}={raw_value!r}; using {DEFAULT_MAX_CONCURRENT_TEST_PROCESSES}."
+        )
+        return DEFAULT_MAX_CONCURRENT_TEST_PROCESSES
+    return value
 
 
 def _build_restricted_builtins():
@@ -569,25 +594,35 @@ def run_tests_for_one_example(test_cases, completion, send_conn, sparse_rewards,
 
         try:
             send_conn.send(record)
-        except Exception:
-            print(f"[{test_idx}] SEND ERROR: {type(e).__name__}: {e}\n")
+        except BaseException as send_error:
+            # The parent treats a closed pipe without a record as a failed test.
+            # Keep this path allocation-light because the send itself can fail
+            # with MemoryError after executing an untrusted completion.
+            try:
+                print(f"[{test_idx}] SEND ERROR: {type(send_error).__name__}: {send_error}\n")
+            except BaseException:
+                pass
 
         # End INNER block
 
     except BaseException as outer_e:
         # Error in OUTER block
-        print(f"[{test_idx}] OUTER EXCEPTION: {type(outer_e).__name__}: {outer_e}\n")
-
-        record = {
-            "test_idx": test_idx,
-            "input": test_input,
-            "expected": test_output,
-            "actual": f"{OUTER_ERROR_PREFIX}{_short_trace(outer_e)}",
-            "passed": False,
-            "debug": "",
-            "time": float("inf"),
-        }
-        send_conn.send(record)
+        try:
+            print(f"[{test_idx}] OUTER EXCEPTION: {type(outer_e).__name__}: {outer_e}\n")
+            record = {
+                "test_idx": test_idx,
+                "input": test_input,
+                "expected": test_output,
+                "actual": f"{OUTER_ERROR_PREFIX}{_short_trace(outer_e)}",
+                "passed": False,
+                "debug": "",
+                "time": float("inf"),
+            }
+            send_conn.send(record)
+        except BaseException:
+            # If even constructing or sending the fallback record fails, close
+            # the pipe and let the parent synthesize a process-error result.
+            pass
 
     finally:
         sys.stderr = old_stderr
@@ -745,6 +780,21 @@ def format_test_feedback(
     return result
 
 
+def _cleanup_test_process(process, parent_conn) -> None:
+    """Stop a test process and deterministically release its OS resources."""
+    try:
+        process.join(timeout=0)
+        if process.is_alive():
+            process.kill()
+            process.join()
+    finally:
+        parent_conn.close()
+        try:
+            process.close()
+        except (AttributeError, ValueError):
+            pass
+
+
 def run_tests(test_cases: dict, solution, sparse_rewards, max_test_cases):
     completion = extract_code(solution)
     if completion is None:
@@ -762,56 +812,89 @@ def run_tests(test_cases: dict, solution, sparse_rewards, max_test_cases):
     timeout_per_test_case = float(test_cases["time_limit"]) if test_cases["time_limit"] is not None else DEFAULT_TIMEOUT
 
     records = []
-    process_data = []
+    max_concurrency = _get_max_concurrent_test_processes()
 
-    for test_idx in range(num_test_cases):
-        parent_conn, child_conn = multiprocessing.Pipe(duplex=False)
-        p = multiprocessing.Process(target=run_tests_for_one_example, args=(test_cases, completion, child_conn, sparse_rewards, test_idx))
-        p.start()
-        child_conn.close()  # Close in parent to avoid resource leaks
-        process_data.append({"process": p, "parent_conn": parent_conn})
+    # Starting every test at once can create hundreds of forked processes for
+    # one completion. Each child has its own memory allowance, so an unbounded
+    # fan-out can exhaust the node even when every child respects its limit.
+    # Run bounded waves while retaining the existing per-test isolation and the
+    # common deadline semantics within each wave.
+    for wave_start in range(0, num_test_cases, max_concurrency):
+        process_data = []
+        wave_stop = min(wave_start + max_concurrency, num_test_cases)
+        try:
+            for test_idx in range(wave_start, wave_stop):
+                parent_conn, child_conn = multiprocessing.Pipe(duplex=False)
+                process = None
+                try:
+                    process = multiprocessing.Process(
+                        target=run_tests_for_one_example,
+                        args=(test_cases, completion, child_conn, sparse_rewards, test_idx),
+                    )
+                    process.start()
+                except BaseException:
+                    child_conn.close()
+                    if process is not None and process.pid is not None:
+                        _cleanup_test_process(process, parent_conn)
+                    else:
+                        parent_conn.close()
+                        try:
+                            if process is not None:
+                                process.close()
+                        except (AttributeError, ValueError):
+                            pass
+                    raise
+                child_conn.close()
+                process_data.append(
+                    {
+                        "test_idx": test_idx,
+                        "process": process,
+                        "parent_conn": parent_conn,
+                        "cleaned": False,
+                    }
+                )
 
-    start_time = time.time()
-    for test_idx, data in enumerate(process_data):
-        p = data["process"]
-        parent_conn = data["parent_conn"]
+            wave_started_at = time.time()
+            for data in process_data:
+                test_idx = data["test_idx"]
+                process = data["process"]
+                parent_conn = data["parent_conn"]
 
-        # timeout for a single test; since all tests have started in parallel, we need to calculate the remaining time for each test
-        timeout_this_test = max(0, timeout_per_test_case * TIMEOUT_SCALER + 1 - (time.time() - start_time))
-        if parent_conn.poll(timeout_this_test):
-            try:
-                # receive the result from the child process
-                result = parent_conn.recv()
-            except Exception as e:
-                # any other error (eg process died without sending a result)
-                result = {
-                    "test_idx": test_idx,
-                    "input": test_cases["inputs"][test_idx],
-                    "expected": test_cases["outputs"][test_idx],
-                    "actual": f"Process Error: {_short_trace(e)}",
-                    "passed": False,
-                    "debug": "",
-                    "time": float("inf"),
-                }
-        else:
-            # process timed out
-            result = {
-                "test_idx": test_idx,
-                "input": test_cases["inputs"][test_idx],
-                "expected": test_cases["outputs"][test_idx],
-                "actual": TIMEOUT,
-                "passed": False,
-                "debug": "",
-                "time": float("inf"),
-            }
+                timeout_this_test = max(
+                    0,
+                    timeout_per_test_case * TIMEOUT_SCALER + 1 - (time.time() - wave_started_at),
+                )
+                if parent_conn.poll(timeout_this_test):
+                    try:
+                        result = parent_conn.recv()
+                    except Exception as error:
+                        result = {
+                            "test_idx": test_idx,
+                            "input": test_cases["inputs"][test_idx],
+                            "expected": test_cases["outputs"][test_idx],
+                            "actual": f"Process Error: {_short_trace(error)}",
+                            "passed": False,
+                            "debug": "",
+                            "time": float("inf"),
+                        }
+                else:
+                    result = {
+                        "test_idx": test_idx,
+                        "input": test_cases["inputs"][test_idx],
+                        "expected": test_cases["outputs"][test_idx],
+                        "actual": TIMEOUT,
+                        "passed": False,
+                        "debug": "",
+                        "time": float("inf"),
+                    }
 
-        records.append(result)
-
-        # clean-up process
-        p.join(timeout=0)
-        if p.is_alive():
-            p.kill()
-            p.join()
+                records.append(result)
+                _cleanup_test_process(process, parent_conn)
+                data["cleaned"] = True
+        finally:
+            for data in process_data:
+                if not data["cleaned"]:
+                    _cleanup_test_process(data["process"], data["parent_conn"])
 
     assert len(records) == num_test_cases
     return records
