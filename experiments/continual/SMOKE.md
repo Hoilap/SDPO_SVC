@@ -44,10 +44,12 @@ remains 18944. All length limits and derived token budgets are inherited from
 the production configuration without overrides. SVC is unchanged
 (rank 64, strength 0.5, CPU by default), as are model export and model handoff.
 Outputs default to `outputs/sdpo_svc_cl_smoke/<Slurm job ID>`.
-Each task also writes validation generations and per-sample scores to
+Tasks other than code also write validation generations and per-sample scores to
 `evaluation/<experiment-name>/<step>.jsonl`, plus aggregate metrics and the
 evaluated sample count to the adjacent `<step>.metrics.json`.  The JSONL records
 include the validation data source and sample UID for mixed-domain analysis.
+The code stage saves only `<step>.metrics.json` with aggregate metrics and the
+evaluated sample count; it does not write the full per-sample JSONL.
 The SVC report records its wall-clock runtime in `elapsed_seconds`.
 
 The loader caps each task at 128 candidate training rows before prompt-length

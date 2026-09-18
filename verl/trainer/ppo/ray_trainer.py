@@ -951,7 +951,7 @@ class RayPPOTrainer:
         # Dump generations with stable sample identifiers and dataset labels so
         # mixed-domain validation results can be inspected without W&B.
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
-        if val_data_dir:
+        if val_data_dir and self.config.trainer.get("validation_dump_generations", True):
             dump_extra_infos_dict = dict(reward_extra_infos_dict)
             dump_extra_infos_dict["data_source"] = data_sources.tolist()
             dump_extra_infos_dict["uid"] = sample_uids

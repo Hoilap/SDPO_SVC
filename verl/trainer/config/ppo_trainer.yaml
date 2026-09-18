@@ -152,6 +152,9 @@ trainer:
   # Directory for logging validation data; no dump if null
   validation_data_dir: null
 
+  # Save per-sample validation generations in addition to aggregate metrics.
+  validation_dump_generations: true
+
   # Number of nodes used in the training
   nnodes: 1
 
