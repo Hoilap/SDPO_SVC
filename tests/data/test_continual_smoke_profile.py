@@ -51,7 +51,7 @@ class SmokeProfileTest(unittest.TestCase):
         self.assertEqual(len(commands), 4)
         self.assertIn("#SBATCH --cpus-per-task=24", RUNNER.read_text())
         for command in commands:
-            self.assertIn("ray_kwargs.ray_init.num_cpus=24", command)
+            self.assertIn("ray_kwargs.ray_init.num_cpus=12", command)
             for value in (
                 "sdpo_smoke",
                 "data.train_batch_size=8",
@@ -63,6 +63,11 @@ class SmokeProfileTest(unittest.TestCase):
                 "actor_rollout_ref.rollout.val_kwargs.n=1",
             ):
                 self.assertIn(value, command)
+
+    def test_ray_cpu_count_is_independently_overridable(self):
+        commands = self.commands(RUN_PROFILE="smoke", RAY_NUM_CPUS="8")
+        for command in commands:
+            self.assertIn("ray_kwargs.ray_init.num_cpus=8", command)
 
     def test_profile_entry_points_select_expected_data_scale(self):
         smoke_commands = self.commands(runner=SMOKE_RUNNER)

@@ -36,13 +36,15 @@ settings take precedence over the profile's shell defaults.
 
 Defaults: all four tasks, 2 updates per task, 8 prompts per global batch,
 4 responses per prompt, micro batch 2 per GPU on 4 GPUs (4 accumulation steps),
-24 CPU cores per job (Ray follows the Slurm CPU allocation),
+24 CPU cores per job (Ray advertises 12, leaving thread headroom for agents),
 learning rate 1e-5, no warmup, Top-100 + tail distillation with alpha 0.5,
 EMA rate 0.05. Gradient checkpointing is enabled. Student prompt/response
 limits remain 2048/8192; teacher reprompt limit remains 10240 and max_model_len
 remains 18944. All length limits and derived token budgets are inherited from
 the production configuration without overrides. SVC is unchanged
 (rank 64, strength 0.5, CPU by default), as are model export and model handoff.
+Native OMP, MKL, OpenBLAS, and NumExpr pools use two threads during training;
+the limit is scoped so the CPU SVC step retains its normal parallelism.
 Outputs default to `outputs/sdpo_svc_cl_smoke/<Slurm job ID>`.
 Tasks other than code also write validation generations and per-sample scores to
 `evaluation/<experiment-name>/<step>.jsonl`, plus aggregate metrics and the

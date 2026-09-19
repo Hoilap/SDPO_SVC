@@ -65,12 +65,6 @@ unset HIP_VISIBLE_DEVICES
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONBUFFERED=1
 export VLLM_USE_V1="${VLLM_USE_V1:-1}"
-# Keep Ray, Torch, and BLAS thread pools from exhausting the per-process/thread
-# limit during validation. Ray workers inherit these values.
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
-export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
-export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 export USER="${USER:-$(whoami)}"
 export WANDB_API_KEY="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"
 export WANDB_ENTITY="20040817dkn-facebook"
@@ -148,12 +142,22 @@ VAL_ROLLOUT_BATCH_SIZE="${VAL_ROLLOUT_BATCH_SIZE:-16}"
 VAL_REWARD_NUM_EXAMINE="${VAL_REWARD_NUM_EXAMINE:-0}"
 FILTER_OVERLONG_PROMPTS_WORKERS="${FILTER_OVERLONG_PROMPTS_WORKERS:-4}"
 AGENT_LOOP_WORKERS="${AGENT_LOOP_WORKERS:-4}"
+# Ray eagerly starts one worker per advertised CPU. Keep enough headroom below
+# the Slurm allocation for Ray's agents and their gRPC threads.
+RAY_NUM_CPUS="${RAY_NUM_CPUS:-12}"
+# Limit native thread pools only while training. CPU SVC runs outside the
+# training subshell and retains its normal parallelism.
+TRAIN_NATIVE_THREADS="${TRAIN_NATIVE_THREADS:-2}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
 LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-10}"
 # Applied on top of manifest limits, never enlarging the deduplicated math pool.
 TRAIN_SAMPLE_LIMIT="${TRAIN_SAMPLE_LIMIT:--1}"
 if [[ ! "$TRAIN_SAMPLE_LIMIT" =~ ^[1-9][0-9]*$ && "$TRAIN_SAMPLE_LIMIT" != -1 ]]; then
     echo "TRAIN_SAMPLE_LIMIT must be -1 or a positive integer" >&2
+    exit 2
+fi
+if [[ ! "$RAY_NUM_CPUS" =~ ^[1-9][0-9]*$ || ! "$TRAIN_NATIVE_THREADS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "RAY_NUM_CPUS and TRAIN_NATIVE_THREADS must be positive integers" >&2
     exit 2
 fi
 # This experiment uses one 4-GPU Slurm node.
@@ -521,6 +525,7 @@ echo "Task range:        $START_TASK..$END_TASK"
 echo "Output root:       $OUTPUT_ROOT"
 echo "Actor batch:       global=$TRAIN_BATCH_SIZE mini=$PPO_MINI_BATCH_SIZE micro-per-gpu=$PPO_MICRO_BATCH_SIZE_PER_GPU"
 echo "Rollout:           n=$ROLLOUT_BATCH_SIZE tp=$ROLLOUT_TENSOR_PARALLEL_SIZE"
+echo "Ray CPU/threading:  cpus=$RAY_NUM_CPUS native-threads=$TRAIN_NATIVE_THREADS"
 echo "SVC:               rank=$SVC_RANK alpha=$SVC_ALPHA strength=$SVC_STRENGTH devices=${SVC_DEVICES:-$SVC_DEVICE}"
 echo "============================================================"
 
@@ -612,7 +617,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     train_cmd=(
         python3 -m verl.trainer.main_ppo
         --config-name "$CONFIG_NAME"
-        "ray_kwargs.ray_init.num_cpus=${SLURM_CPUS_PER_TASK:-24}"
+        "ray_kwargs.ray_init.num_cpus=$RAY_NUM_CPUS"
         "data.train_files=$train_files_override"
         "data.val_files=$val_files_override"
         "data.train_batch_size=$TRAIN_BATCH_SIZE"
@@ -656,7 +661,15 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "actor_rollout_ref.actor.checkpoint.load_contents=['model','extra']"
         "custom_reward_function.path=$PROJECT_ROOT/verl/utils/reward_score/feedback/__init__.py"
     )
-    run_command "${train_cmd[@]}"
+    # Scope native-library limits to Ray training workers. In particular, do
+    # not pass them to the CPU SVC step below.
+    (
+        export OMP_NUM_THREADS="$TRAIN_NATIVE_THREADS"
+        export MKL_NUM_THREADS="$TRAIN_NATIVE_THREADS"
+        export OPENBLAS_NUM_THREADS="$TRAIN_NATIVE_THREADS"
+        export NUMEXPR_NUM_THREADS="$TRAIN_NATIVE_THREADS"
+        run_command "${train_cmd[@]}"
+    )
 
     if [[ "$DRY_RUN" == true ]]; then
         actor_checkpoint="$task_checkpoint_dir/<latest-global-step>/actor"

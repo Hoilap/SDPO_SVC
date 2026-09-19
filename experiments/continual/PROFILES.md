@@ -13,6 +13,9 @@ checkpoint export, and SVC logic remain in one place.
 All profiles use an actor PPO micro batch size of 1 per GPU.  Try and full keep
 their global and PPO mini batch sizes at 32, using gradient accumulation to
 reduce peak GPU memory.
+Each job reserves 24 CPU cores while Ray advertises 12 to leave room for agent
+and gRPC threads. Native numerical libraries use two threads inside the Ray
+training command; the subsequent CPU SVC step keeps its normal parallelism.
 
 ```bash
 sbatch experiments/continual/smoke.sh
