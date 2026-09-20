@@ -5,6 +5,7 @@
 #SBATCH --partition=gpu_chen
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
+#SBATCH --exclusive
 #SBATCH --mem=460000
 #SBATCH --cpus-per-task=24
 #SBATCH --output=logs/sdpo-svc-smoke-%j.out

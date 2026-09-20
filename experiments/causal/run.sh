@@ -5,6 +5,7 @@
 #SBATCH --partition=gpu_chen
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
+#SBATCH --exclusive
 #SBATCH --mem=460000
 #SBATCH --cpus-per-task=24
 #SBATCH --time=48:00:00
@@ -13,7 +14,7 @@
 
 # One-seed Math -> Science causal experiment from PLAN.md.
 # Usage:
-#   bash experiments/causal/run.sh <prepare|math|surgery|eval-math|science|eval-science|summary|all> [--dry-run]
+#   bash experiments/causal/run.sh <prepare|math|math-sdpo|surgery|eval-math|science|eval-science|summary|all> [--dry-run]
 
 set -euo pipefail
 
@@ -21,7 +22,7 @@ STAGE="${1:-}"
 DRY_RUN=false
 if [[ "${2:-}" == "--dry-run" ]]; then DRY_RUN=true; fi
 if [[ -z "$STAGE" || $# -gt 2 || ( $# -eq 2 && "${2:-}" != "--dry-run" ) ]]; then
-    echo "Usage: $0 <prepare|math|surgery|eval-math|science|eval-science|summary|all> [--dry-run]" >&2
+    echo "Usage: $0 <prepare|math|math-sdpo|surgery|eval-math|science|eval-science|summary|all> [--dry-run]" >&2
     exit 2
 fi
 
@@ -217,6 +218,26 @@ run_math() {
     train_model sdpo math "$BASE_MODEL" "tail-seed1-SDPO-Math" "$MATH_HF_ROOT/sdpo_full" "${MATH_TRAIN_FILES[@]}"
 }
 
+run_math_sdpo() {
+    local run_name="tail-seed1-SDPO-Math"
+    local checkpoint_dir="$CHECKPOINT_ROOT/$run_name"
+    local validation_dir="$EVAL_ROOT/during_math/$run_name"
+    local output_hf="$MATH_HF_ROOT/sdpo_full"
+    local archive_root="$OUTPUT_ROOT/incomplete_attempts/${run_name}-${SLURM_JOB_ID:-manual}"
+    load_data
+    if [[ "$DRY_RUN" != true ]]; then
+        [[ ! -e "$output_hf" ]] || { echo "Refusing to overwrite $output_hf" >&2; exit 1; }
+        if [[ -e "$checkpoint_dir" || -e "$validation_dir" ]]; then
+            [[ ! -e "$archive_root" ]] || { echo "Archive already exists: $archive_root" >&2; exit 1; }
+            mkdir -p "$archive_root"
+            [[ ! -e "$checkpoint_dir" ]] || mv "$checkpoint_dir" "$archive_root/checkpoint"
+            [[ ! -e "$validation_dir" ]] || mv "$validation_dir" "$archive_root/validation"
+            echo "Archived the previous SDPO-Math attempt under $archive_root"
+        fi
+    fi
+    train_model sdpo math "$BASE_MODEL" "$run_name" "$output_hf" "${MATH_TRAIN_FILES[@]}"
+}
+
 run_surgery() {
     run_command python3 experiments/causal/tail_surgery.py \
         --base-model "$BASE_MODEL" --grpo-model "$MATH_HF_ROOT/grpo_full" \
@@ -299,6 +320,7 @@ fi
 case "$STAGE" in
     prepare) prepare_data ;;
     math) run_math ;;
+    math-sdpo) run_math_sdpo ;;
     surgery) run_surgery ;;
     eval-math) run_eval_math ;;
     science) run_science ;;

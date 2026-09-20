@@ -40,6 +40,27 @@ allocation can execute everything sequentially:
 sbatch --export=ALL,OUTPUT_ROOT="$OUTPUT_ROOT" experiments/causal/run.sh all
 ```
 
+If the SDPO-Math final checkpoint was interrupted, restart only that run while
+keeping the completed GRPO-Math output and archiving the previous SDPO-Math
+checkpoint and validation artifacts:
+
+```bash
+sbatch --export=ALL,OUTPUT_ROOT="$OUTPUT_ROOT" \
+  experiments/causal/run.sh math-sdpo
+```
+
+The incomplete checkpoint and its validation output are moved under
+`incomplete_attempts/` before the affected arm restarts.
+
+To submit SDPO-Math and every subsequent GPU stage as one dependency chain:
+
+```bash
+bash experiments/causal/submit_from_sdpo_math.sh "$OUTPUT_ROOT"
+```
+
+The helper refuses to submit if another `tail-causal` job is active. It prints
+the command for building the final summary after the last evaluation finishes.
+
 Useful safe overrides include `BASE_MODEL`, `SEED`, `TRAIN_SAMPLE_LIMIT`
 (values above 3000 are rejected), `TAIL_DEVICE`, and `WANDB_MODE`.
 
