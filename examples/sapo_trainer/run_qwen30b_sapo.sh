@@ -7,7 +7,6 @@
 #SBATCH --gres=gpu:8
 #SBATCH --gpus-per-node=8
 #SBATCH --mem=0
-#SBATCH --exclusive
 #SBATCH --time=500:00:00
 #SBATCH --output=logs/sapo/30B/frugal_math/%x_%j.out
 #SBATCH --error=logs/sapo/30B/frugal_math/%x_%j.err

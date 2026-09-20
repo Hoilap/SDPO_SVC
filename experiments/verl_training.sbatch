@@ -6,7 +6,6 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=28
 #SBATCH --mem=0
-#SBATCH --exclusive
 #SBATCH --gres=gpu:8
 #SBATCH -J verl_training
 

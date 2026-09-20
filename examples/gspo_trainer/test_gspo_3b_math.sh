@@ -6,7 +6,6 @@
 #SBATCH --cpus-per-task=128      # cpu-cores per task
 #SBATCH --gres=gpu:8
 #SBATCH --mem=0
-#SBATCH --exclusive
 #SBATCH --time=500:00:00
 #SBATCH --output=/rl/logs/Qwen2.5-3B/gspo/math/vllm_%x_%j.out
 #SBATCH --error=/rl/logs/Qwen2.5-3B/gspo/math/vllm_%x_%j.err
