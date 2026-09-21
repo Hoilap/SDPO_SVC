@@ -192,6 +192,7 @@ train_model() {
         "trainer.default_local_dir=$checkpoint_dir" "trainer.resume_mode=disable"
         "trainer.total_epochs=$TOTAL_EPOCHS" "trainer.val_before_train=$val_before"
         "trainer.test_freq=$test_freq" "trainer.validation_data_dir=$validation_dir"
+        "trainer.validation_dump_generations=False"
         "trainer.save_freq=1000000000"
         "trainer.max_actor_ckpt_to_keep=1" "trainer.n_gpus_per_node=4" "trainer.nnodes=1"
         "actor_rollout_ref.actor.checkpoint.save_contents=['model','extra']"

@@ -541,11 +541,8 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     experiment_name="SDPO-SVC-CL-${task_number}-${dataset_name}"
     task_checkpoint_dir="$CHECKPOINT_ROOT/$experiment_name"
     task_eval_dir="$EVAL_RESULT_ROOT/$experiment_name"
-    # Code-stage validation keeps aggregate metrics without full sample dumps.
-    validation_dump_generations=True
-    if [[ "$dataset_name" == code ]]; then
-        validation_dump_generations=False
-    fi
+    # Keep aggregate validation metrics without writing full sample dumps.
+    validation_dump_generations=False
     raw_hf_dir="$HF_ROOT/${task_number}-${dataset_name}-raw"
     calibrated_hf_dir="$HF_ROOT/${task_number}-${dataset_name}-svc"
 
