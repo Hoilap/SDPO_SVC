@@ -144,6 +144,8 @@ PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-32}"
 PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-1}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-8}"
 VAL_ROLLOUT_BATCH_SIZE="${VAL_ROLLOUT_BATCH_SIZE:-16}"
+# Bound code scoring fan-out for both training and validation.
+export CODE_REWARD_MAX_CONCURRENCY=2
 # Reward-manager response dumps are extremely verbose because this limit is
 # applied independently to every validation batch. Keep them disabled; use
 # W&B generation logging or validation_data_dir for intentional sample dumps.
