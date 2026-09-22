@@ -44,6 +44,15 @@ fi
 source "$SCRIPT_DIR/dataset_manifest.sh"
 cd "$PROJECT_ROOT"
 
+SDPO_CONDA_ROOT="${SDPO_CONDA_ROOT:-$HOME/miniconda3}"
+SDPO_CONDA_ENV="${SDPO_CONDA_ENV:-sdpo}"
+if [[ ! -f "$SDPO_CONDA_ROOT/etc/profile.d/conda.sh" ]]; then
+    echo "Cannot find Conda initialization below $SDPO_CONDA_ROOT" >&2
+    exit 2
+fi
+source "$SDPO_CONDA_ROOT/etc/profile.d/conda.sh"
+conda activate "$SDPO_CONDA_ENV"
+
 # Triton and Torch Inductor require a newer compiler than the cluster's system
 # GCC. Export the selected toolchain so Ray workers and their subprocesses use
 # the same GCC 9.1 installation.

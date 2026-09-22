@@ -33,6 +33,15 @@ else
 fi
 cd "$PROJECT_ROOT"
 
+SDPO_CONDA_ROOT="${SDPO_CONDA_ROOT:-$HOME/miniconda3}"
+SDPO_CONDA_ENV="${SDPO_CONDA_ENV:-sdpo}"
+if [[ ! -f "$SDPO_CONDA_ROOT/etc/profile.d/conda.sh" ]]; then
+    echo "Cannot find Conda initialization below $SDPO_CONDA_ROOT" >&2
+    exit 2
+fi
+source "$SDPO_CONDA_ROOT/etc/profile.d/conda.sh"
+conda activate "$SDPO_CONDA_ENV"
+
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/causal_tail_seed1/${SLURM_JOB_ID:-manual}}"
 BASE_MODEL="${BASE_MODEL:-../model/Qwen3-4B-Instruct-2507}"
 SEED="${SEED:-42}"
