@@ -283,6 +283,7 @@ evaluate_model() {
         "trainer.project_name=$WANDB_PROJECT" "trainer.experiment_name=eval-$phase-$slug" \
         "trainer.logger=['console']" "trainer.val_before_train=True" "trainer.val_only=True" \
         "trainer.validation_data_dir=$EVAL_ROOT/$phase/$arm" \
+        "trainer.validation_dump_generations=False" \
         "trainer.n_gpus_per_node=4" "trainer.nnodes=1" \
         "custom_reward_function.path=$PROJECT_ROOT/verl/utils/reward_score/feedback/__init__.py"
 }
