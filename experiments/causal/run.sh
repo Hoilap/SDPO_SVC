@@ -76,10 +76,12 @@ mkdir -p "$OUTPUT_ROOT" "$CHECKPOINT_ROOT" "$MATH_HF_ROOT" "$SCIENCE_HF_ROOT" "$
 
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONBUFFERED=1
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
-export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
-export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+# Bound scoring fan-out and native threads even when sbatch inherits larger values.
+export CODE_REWARD_MAX_CONCURRENCY=2
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
 export VLLM_USE_V1="${VLLM_USE_V1:-1}"
 export WANDB_PROJECT="${WANDB_PROJECT:-SDPO}"
 export WANDB_MODE="${WANDB_MODE:-online}"
@@ -204,6 +206,7 @@ train_model() {
         "trainer.save_freq=1000000000"
         "trainer.max_actor_ckpt_to_keep=1" "trainer.n_gpus_per_node=4" "trainer.nnodes=1"
         "actor_rollout_ref.actor.checkpoint.save_contents=['model','extra']"
+        "actor_rollout_ref.actor.checkpoint.async_save=False"
         "actor_rollout_ref.actor.checkpoint.load_contents=['model','extra']"
         "custom_reward_function.path=$PROJECT_ROOT/verl/utils/reward_score/feedback/__init__.py"
     )
