@@ -77,7 +77,7 @@ mkdir -p "$OUTPUT_ROOT" "$CHECKPOINT_ROOT" "$MATH_HF_ROOT" "$SCIENCE_HF_ROOT" "$
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONBUFFERED=1
 # Bound scoring fan-out and native threads even when sbatch inherits larger values.
-export CODE_REWARD_MAX_CONCURRENCY=2
+export CODE_REWARD_MAX_CONCURRENCY=8
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1

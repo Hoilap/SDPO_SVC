@@ -7,7 +7,9 @@ import io
 import json
 import multiprocessing
 import os
+import pickle
 import re
+import reprlib
 import sys
 import time
 import traceback
@@ -23,6 +25,11 @@ OUTER_ERROR_PREFIX = "ERROR: "
 MAX_ADDITIONAL_MEMORY_BYTES = 1024 * 1024 * 1024  # 1GB
 DEFAULT_MAX_CONCURRENT_TEST_PROCESSES = 8
 MAX_CONCURRENCY_ENV_VAR = "CODE_REWARD_MAX_CONCURRENCY"
+DEFAULT_MAX_OUTPUT_CHARS = 4 * 1024 * 1024
+MAX_FEEDBACK_CHARS = 4096
+INFRASTRUCTURE_ERROR_KINDS = frozenset({
+    "memory_limit_setup", "setup_memory", "setup_error", "ipc_memory", "ipc_error", "process_exit",
+})
 DEFAULT_TIMEOUT = 1
 TIMEOUT_SCALER = 1.0
 FORMAT_PENALTY = False
@@ -44,34 +51,102 @@ except Exception:  # pragma: no cover - platform may not provide resource
     _resource = None  # type: ignore
 
 
-def set_memory_limits(maximum_memory_bytes: Optional[int]) -> None:
-    """
-    Apply OS-level memory limits to the current process, if supported.
+class MemoryLimitSetupError(RuntimeError):
+    """The evaluator could not establish its address-space budget."""
 
-    This uses RLIMIT_AS (address space) as the primary cap, and attempts
-    RLIMIT_DATA and RLIMIT_RSS where available. It is a best-effort guard
-    to prevent out-of-memory conditions from crashing the host.
-    """
-    if maximum_memory_bytes is None or maximum_memory_bytes <= 0 or _resource is None:
+
+class OutputLimitExceeded(RuntimeError):
+    pass
+
+
+def _current_vms_bytes():
+    # Read in the child before reliability_guard disables file access.
+    with open("/proc/self/statm") as stream:
+        return int(stream.read().split()[0]) * os.sysconf("SC_PAGE_SIZE")
+
+
+def set_memory_limits(additional_memory_bytes: Optional[int]) -> None:
+    """Limit virtual-address growth, not RSS, without relaxing inherited limits."""
+    if additional_memory_bytes is None or additional_memory_bytes <= 0:
         return
-
     try:
-        # Cap total address space; this is the most reliable on Linux.
-        if hasattr(_resource, "RLIMIT_AS"):
-            _resource.setrlimit(_resource.RLIMIT_AS, (maximum_memory_bytes, maximum_memory_bytes))
-        # Also try to cap data segment and resident set size when available.
-        for limit_name in ("RLIMIT_DATA", "RLIMIT_RSS"):
-            if hasattr(_resource, limit_name):
-                limit_const = getattr(_resource, limit_name)
-                try:
-                    _resource.setrlimit(limit_const, (maximum_memory_bytes, maximum_memory_bytes))
-                except Exception:
-                    # Not all platforms allow setting these limits; ignore failures.
-                    print("Failed to set memory limits")
-                    pass
-    except Exception:
-        print("Failed to set memory limits")
-        pass
+        if _resource is None or not hasattr(_resource, "RLIMIT_AS"):
+            raise MemoryLimitSetupError("RLIMIT_AS is unavailable")
+        baseline = _current_vms_bytes()
+        target = baseline + additional_memory_bytes
+        soft, hard = _resource.getrlimit(_resource.RLIMIT_AS)
+        inherited = [x for x in (soft, hard) if x != _resource.RLIM_INFINITY]
+        if inherited and min(inherited) < target:
+            raise MemoryLimitSetupError(
+                f"Insufficient address-space budget: baseline={baseline}, extra={additional_memory_bytes}, "
+                f"inherited_soft={soft}, inherited_hard={hard}"
+            )
+        _resource.setrlimit(_resource.RLIMIT_AS, (target, target))
+    except MemoryLimitSetupError:
+        raise
+    except Exception as error:
+        raise MemoryLimitSetupError("Failed to configure evaluation address-space limit") from error
+
+
+class _BoundedOutput(io.StringIO):
+    """Bound captured text at write time, including repeated writes and seeks."""
+
+    def __init__(self):
+        super().__init__()
+        self.limit = int(os.environ.get("CODE_REWARD_MAX_OUTPUT_CHARS", DEFAULT_MAX_OUTPUT_CHARS))
+        if self.limit <= 0:
+            raise ValueError("CODE_REWARD_MAX_OUTPUT_CHARS must be positive")
+        self.exceeded = False
+
+    def write(self, text):
+        if self.exceeded or self.tell() + len(text) > self.limit:
+            self.exceeded = True
+            raise OutputLimitExceeded("Captured output exceeds CODE_REWARD_MAX_OUTPUT_CHARS")
+        return super().write(text)
+
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
+    def truncate(self, size=None):
+        if (self.tell() if size is None else size) > self.limit:
+            self.exceeded = True
+            raise OutputLimitExceeded("Captured output exceeds CODE_REWARD_MAX_OUTPUT_CHARS")
+        return super().truncate(size)
+
+
+def _feedback_preview(value):
+    if isinstance(value, str):
+        return value[:MAX_FEEDBACK_CHARS]
+    preview = reprlib.Repr()
+    preview.maxstring = preview.maxother = MAX_FEEDBACK_CHARS
+    return preview.repr(value)[:MAX_FEEDBACK_CHARS]
+
+
+def _error_record(kind, message):
+    return {"passed": False, "actual": message, "debug": "", "time": float("inf"), "error_kind": kind}
+
+
+# Pre-serialize the fallback before applying child limits: never re-send a large
+# record or construct a traceback while handling a failed allocation.
+_IPC_FAILURES = {
+    kind: pickle.dumps(_error_record(kind, message))
+    for kind, message in (
+        ("ipc_memory", "Evaluation infrastructure error: result serialization ran out of memory"),
+        ("ipc_error", "Evaluation infrastructure error: result transport failed"),
+    )
+}
+
+
+def _send_result(connection, record):
+    try:
+        connection.send(record)
+    except BaseException as error:
+        kind = "ipc_memory" if isinstance(error, MemoryError) else "ipc_error"
+        try:
+            connection.send_bytes(_IPC_FAILURES[kind])
+        except BaseException:
+            pass  # Parent records EOF/exit status as an infrastructure failure.
 
 
 def _get_max_concurrent_test_processes() -> int:
@@ -205,7 +280,7 @@ def _create_sandbox_namespace(extra_globals=None):
     ns = {"__builtins__": _build_restricted_builtins()}
 
     # Provide a dedicated debug print facility that is captured separately from stdout
-    _debug_buffer = io.StringIO()
+    _debug_buffer = _BoundedOutput()
 
     def debug_print(*args, **kwargs):  # type: ignore[override]
         sep = kwargs.get("sep", " ")
@@ -459,7 +534,9 @@ def run_test_func(completion, test_input, test_output, fn_name, namespace=None):
         if func_name not in namespace or not callable(namespace.get(func_name, None)):
             func_name = completion.split("(")[0].split()[-1]
 
-    output = io.StringIO()
+    output = _BoundedOutput()
+    namespace.setdefault("_output_buffers", []).append(output)
+    old_stdout = sys.stdout
     sys.stdout = output
     old_stderr = _capture_stderr(namespace)
 
@@ -479,22 +556,27 @@ def run_test_func(completion, test_input, test_output, fn_name, namespace=None):
             if lhs_dump != rhs_dump:
                 return False, result_output
             return True, result_output
+        except (MemoryError, OutputLimitExceeded):
+            raise
         except Exception as ser_err:
             error_msg = f"{ERROR_PREFIX}{ser_err}"
             return False, error_msg
 
+    except (MemoryError, OutputLimitExceeded):
+        raise
     except BaseException as e:
         error_msg = f"{ERROR_PREFIX}{_short_trace(e)}"
         return False, error_msg
 
     finally:
-        sys.stdout = sys.__stdout__
+        sys.stdout = old_stdout
         sys.stderr = old_stderr
 
 
 def run_test_std(completion, test_input, test_output, namespace=None):
     namespace = _create_sandbox_namespace() if namespace is None else namespace
-    output = io.StringIO()
+    output = _BoundedOutput()
+    namespace.setdefault("_output_buffers", []).append(output)
     old_stdout, old_stdin = sys.stdout, sys.stdin
     old_stderr = _capture_stderr(namespace)
     try:
@@ -505,6 +587,8 @@ def run_test_std(completion, test_input, test_output, namespace=None):
         out = output.getvalue().strip().replace("\n", " ").replace("\r", "")
         expected = test_output.strip().replace("\n", " ").replace("\r", "")
         return out == expected, output.getvalue().strip()
+    except (MemoryError, OutputLimitExceeded):
+        raise
     except BaseException as e:
         return False, f"{ERROR_PREFIX}{_short_trace(e)}"
     finally:
@@ -524,6 +608,8 @@ def run_test_code(completion, test_input, namespace=None):
         test_code_obj = compile(test_input, TESTS_FILENAME, "exec")
         _exec_with_isolated_locals(test_code_obj, namespace)
         return True, "All tests pass"
+    except (MemoryError, OutputLimitExceeded):
+        raise
     except BaseException as e:
         return False, f"{ERROR_PREFIX}{_short_trace(e)}"
     finally:
@@ -531,101 +617,73 @@ def run_test_code(completion, test_input, namespace=None):
 
 
 def run_tests_for_one_example(test_cases, completion, send_conn, sparse_rewards, test_idx):
-    """Run a single test case (test_idx) for one completion"""
+    """Execute one test and return bounded feedback, without echoing its inputs."""
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    namespace = None
+    started = time.monotonic()
+    stage = "setup"
+    try:
+        # Establish limits before executing context or generated code.
+        reliability_guard()
+        namespace = _create_sandbox_namespace()
+        captured_stdout = _BoundedOutput()
+        namespace["_output_buffers"] = [captured_stdout]
+        sys.stdout = captured_stdout
+        sys.stderr = namespace[DEBUG_BUFFER_NAME]
+        stage = "execution"
+        context = test_cases.get("context", "")
+        if context.strip():
+            _exec_with_isolated_locals(compile(context, CONTEXT_FILENAME, "exec"), namespace)
 
-    test_type = test_cases["testtype"]
-    fn_name = test_cases["fn_name"]
+        test_input = test_cases["inputs"][test_idx]
+        test_output = test_cases["outputs"][test_idx]
+        test_type = test_cases["testtype"]
+        if test_type == "functional":
+            passed, actual = run_test_func(
+                completion, copy.deepcopy(test_input), copy.deepcopy(test_output), test_cases["fn_name"], namespace
+            )
+        elif test_type == "stdin":
+            test_output = test_output.strip()
+            if test_output.endswith("-"):
+                test_output = test_output[: test_output.rfind("-")].rstrip()
+            passed, actual = run_test_std(completion, test_input, test_output, namespace)
+        elif test_type == "code":
+            passed, actual = run_test_code(completion, test_input, namespace)
+        else:
+            raise ValueError(f"Invalid test type: {test_type}")
 
-    context = test_cases.get("context", "")
-    globals = _create_sandbox_namespace()
-    if context.strip() != "":
-        code_obj = compile(context, CONTEXT_FILENAME, "exec")
-        _exec_with_isolated_locals(code_obj, globals)
-
-    reliability_guard()
-    old_stderr = _capture_stderr(globals)
-
-    time_elapsed = float("inf")
-    test_input = test_cases["inputs"][test_idx]
-    test_output = test_cases["outputs"][test_idx]
-    output_value = ""
-    test_debug = ""
+        # A solution may catch output exceptions; reaching the cap still fails.
+        buffers = namespace["_output_buffers"] + [namespace[DEBUG_BUFFER_NAME]]
+        if any(buffer.exceeded for buffer in buffers):
+            raise OutputLimitExceeded("Captured output exceeds CODE_REWARD_MAX_OUTPUT_CHARS")
+        stage = "result"
+        record = {
+            "passed": passed,
+            "actual": _feedback_preview(actual),
+            "debug": namespace[DEBUG_BUFFER_NAME].getvalue()[:MAX_FEEDBACK_CHARS],
+            "time": time.monotonic() - started,
+            "error_kind": "execution_error" if not passed and isinstance(actual, str) and actual.startswith(ERROR_PREFIX) else "",
+        }
+    except MemoryLimitSetupError as error:
+        record = _error_record("memory_limit_setup", f"Evaluation infrastructure error: {error}")
+    except OutputLimitExceeded:
+        record = _error_record("output_limit", "Error: Output limit exceeded")
+    except MemoryError:
+        if stage == "result":
+            record = _error_record("ipc_memory", "Evaluation infrastructure error: preparing result ran out of memory")
+        elif stage == "setup":
+            record = _error_record("setup_memory", "Evaluation infrastructure error: setup ran out of memory")
+        else:
+            record = _error_record("execution_memory", "Error: MemoryError during test execution")
+    except BaseException as error:
+        kind = {"setup": "setup_error", "result": "ipc_error", "execution": "execution_error"}[stage]
+        record = _error_record(kind, ERROR_PREFIX + _feedback_preview(_short_trace(error)))
+    finally:
+        sys.stdout, sys.stderr = old_stdout, old_stderr
 
     try:
-        # OUTER block
-        time_start = time.time()
-        try:
-            # INNER block (actual test code execution)
-            if test_type == "functional":
-                passed, output_value = run_test_func(
-                    completion, copy.deepcopy(test_input), copy.deepcopy(test_output), fn_name, globals
-                )
-            elif test_type == "stdin":
-                test_output = test_output.strip()
-                if test_output.endswith("-"):
-                    test_output = test_output[: test_output.rfind("-")].rstrip()  # Remove '-' if present and trailing
-                passed, output_value = run_test_std(
-                    completion, copy.deepcopy(test_input), copy.deepcopy(test_output), globals
-                )
-            elif test_type == "code":
-                passed, output_value = run_test_code(completion, copy.deepcopy(test_input), globals)
-            else:
-                raise ValueError(f"Invalid test type: {test_type}")
-
-        except BaseException as e:
-            passed = False
-            output_value = f"{ERROR_PREFIX}{_short_trace(e)}"
-
-        finally:
-            time_elapsed = time.time() - time_start
-
-        if DEBUG_BUFFER_NAME in globals:
-            test_debug = globals[DEBUG_BUFFER_NAME].getvalue()
-
-        record = {
-            "test_idx": test_idx,
-            "input": test_input,
-            "expected": test_output,
-            "actual": output_value,
-            "passed": passed,
-            "debug": test_debug,
-            "time": time_elapsed,
-        }
-
-        try:
-            send_conn.send(record)
-        except BaseException as send_error:
-            # The parent treats a closed pipe without a record as a failed test.
-            # Keep this path allocation-light because the send itself can fail
-            # with MemoryError after executing an untrusted completion.
-            try:
-                print(f"[{test_idx}] SEND ERROR: {type(send_error).__name__}: {send_error}\n")
-            except BaseException:
-                pass
-
-        # End INNER block
-
-    except BaseException as outer_e:
-        # Error in OUTER block
-        try:
-            print(f"[{test_idx}] OUTER EXCEPTION: {type(outer_e).__name__}: {outer_e}\n")
-            record = {
-                "test_idx": test_idx,
-                "input": test_input,
-                "expected": test_output,
-                "actual": f"{OUTER_ERROR_PREFIX}{_short_trace(outer_e)}",
-                "passed": False,
-                "debug": "",
-                "time": float("inf"),
-            }
-            send_conn.send(record)
-        except BaseException:
-            # If even constructing or sending the fallback record fails, close
-            # the pipe and let the parent synthesize a process-error result.
-            pass
-
+        _send_result(send_conn, record)
     finally:
-        sys.stderr = old_stderr
         send_conn.close()
 
 
@@ -682,7 +740,8 @@ def format_test_feedback(
                 continue
         return None
     selected = (
-        _first(lambda rec: isinstance(rec.get("actual"), str) and str(rec.get("actual")).startswith(ERROR_PREFIX))
+        _first(lambda rec: rec.get("error_kind") in INFRASTRUCTURE_ERROR_KINDS)
+        or _first(lambda rec: isinstance(rec.get("actual"), str) and str(rec.get("actual")).startswith(ERROR_PREFIX))
         or _first(lambda rec: rec.get("actual") == TIMEOUT)
         or _first(lambda rec: rec.get("actual") == INCORRECT_FORMAT)
     )
@@ -743,7 +802,11 @@ def format_test_feedback(
         is_incorrect_format = actual == INCORRECT_FORMAT
 
         # Header similar to LeetCode per failing case
-        if is_error:
+        if r.get("error_kind") in INFRASTRUCTURE_ERROR_KINDS:
+            parts.append("Evaluation Infrastructure Error")
+            parts.append(str(actual))
+            parts.append(f"Category: {r['error_kind']}; exit code: {r.get('exit_code')}")
+        elif is_error:
             parts.append("Runtime Error")
             parts.append(actual[len(ERROR_PREFIX):])
             parts.append("")
@@ -783,10 +846,12 @@ def format_test_feedback(
 def _cleanup_test_process(process, parent_conn) -> None:
     """Stop a test process and deterministically release its OS resources."""
     try:
-        process.join(timeout=0)
+        # Give a child that has closed its pipe time to publish its exit status.
+        process.join(timeout=0.1)
         if process.is_alive():
             process.kill()
             process.join()
+        return getattr(process, "exitcode", None)
     finally:
         parent_conn.close()
         try:
@@ -867,30 +932,31 @@ def run_tests(test_cases: dict, solution, sparse_rewards, max_test_cases):
                 if parent_conn.poll(timeout_this_test):
                     try:
                         result = parent_conn.recv()
+                        if not isinstance(result, dict) or not {"passed", "actual", "debug", "time"} <= result.keys():
+                            raise ValueError("Invalid evaluator result")
                     except Exception as error:
-                        result = {
-                            "test_idx": test_idx,
-                            "input": test_cases["inputs"][test_idx],
-                            "expected": test_cases["outputs"][test_idx],
-                            "actual": f"Process Error: {_short_trace(error)}",
-                            "passed": False,
-                            "debug": "",
-                            "time": float("inf"),
-                        }
+                        result = _error_record(
+                            "process_exit" if isinstance(error, EOFError) else "ipc_error",
+                            f"Evaluation infrastructure error: {type(error).__name__} receiving test result",
+                        )
                 else:
-                    result = {
-                        "test_idx": test_idx,
-                        "input": test_cases["inputs"][test_idx],
-                        "expected": test_cases["outputs"][test_idx],
-                        "actual": TIMEOUT,
-                        "passed": False,
-                        "debug": "",
-                        "time": float("inf"),
-                    }
+                    result = _error_record("timeout", TIMEOUT) if process.is_alive() else _error_record(
+                        "process_exit", "Evaluation infrastructure error: child exited without a result"
+                    )
 
-                records.append(result)
-                _cleanup_test_process(process, parent_conn)
+                # Inputs stay in the parent; the wire result contains only small
+                # feedback fields. Preserve the public record layout.
+                result["test_idx"] = test_idx
+                result["input"] = test_cases["inputs"][test_idx]
+                expected = test_cases["outputs"][test_idx]
+                if test_cases["testtype"] == "stdin":
+                    expected = expected.strip()
+                    if expected.endswith("-"):
+                        expected = expected[:expected.rfind("-")].rstrip()
+                result["expected"] = expected
+                result["exit_code"] = _cleanup_test_process(process, parent_conn)
                 data["cleaned"] = True
+                records.append(result)
         finally:
             for data in process_data:
                 if not data["cleaned"]:
