@@ -7,7 +7,7 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --mem=460000
 #SBATCH --cpus-per-task=24
-#SBATCH --time=48:00:00
+#SBATCH --time=0
 #SBATCH --output=logs/tail-causal-%j.out
 #SBATCH --error=logs/tail-causal-%j.err
 
@@ -271,6 +271,28 @@ arm_path() {
 
 evaluate_model() {
     local model="$1" arm="$2" phase="$3" slug val_override train_override
+    # Opt in only when resuming the same evaluation configuration/output root.
+    # A metrics file is written after the entire validation pass completes.
+    local metrics_file="$EVAL_ROOT/$phase/$arm/0.metrics.json"
+    if [[ "${SKIP_COMPLETED_EVAL:-0}" == 1 && "$DRY_RUN" != true && -f "$metrics_file" ]]; then
+        python3 - "$metrics_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as f:
+    result = json.load(f)
+if not (
+    result.get("step") == 0
+    and isinstance(result.get("num_samples"), int)
+    and result["num_samples"] > 0
+    and isinstance(result.get("metrics"), dict)
+    and result["metrics"]
+):
+    raise ValueError(f"Incomplete evaluation metrics: {sys.argv[1]}")
+print(f"SKIP completed evaluation: {sys.argv[1]}", flush=True)
+PY
+        return
+    fi
     slug="$(echo "$arm" | tr '[:upper:] +' '[:lower:]__')"
     export EXPERIMENT="eval-$phase-$slug"
     export TASK="evaluation"
