@@ -19,8 +19,14 @@ FULL_RUNNER = ROOT / "experiments/continual/full.sh"
 class SmokeProfileTest(unittest.TestCase):
     def commands(self, module="verl.trainer.main_ppo", runner=RUNNER, **overrides):
         with tempfile.TemporaryDirectory(prefix="sdpo-profile-test-") as output:
+            # These tests inspect generated commands only; they must not require
+            # the cluster's Conda installation or activate a real environment.
+            conda_root = Path(output) / "conda"
+            init = conda_root / "etc/profile.d/conda.sh"
+            init.parent.mkdir(parents=True)
+            init.write_text("conda() { return 0; }\n")
             env = {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
-            env.update(OUTPUT_ROOT=output, **overrides)
+            env.update(OUTPUT_ROOT=output, SDPO_CONDA_ROOT=str(conda_root), **overrides)
             result = subprocess.run(
                 ["bash", str(runner), "--dry-run"],
                 cwd=ROOT,
@@ -68,6 +74,14 @@ class SmokeProfileTest(unittest.TestCase):
         commands = self.commands(RUN_PROFILE="smoke", RAY_NUM_CPUS="8")
         for command in commands:
             self.assertIn("ray_kwargs.ray_init.num_cpus=8", command)
+
+    def test_gpu_count_follows_allocation(self):
+        for command in self.commands(RUN_PROFILE="smoke", SLURM_GPUS_ON_NODE="2"):
+            self.assertIn("trainer.n_gpus_per_node=2", command)
+
+    def test_explicit_gpu_count_overrides_default(self):
+        for command in self.commands(RUN_PROFILE="smoke", N_GPUS_PER_NODE="2"):
+            self.assertIn("trainer.n_gpus_per_node=2", command)
 
     def test_profile_entry_points_select_expected_data_scale(self):
         smoke_commands = self.commands(runner=SMOKE_RUNNER)

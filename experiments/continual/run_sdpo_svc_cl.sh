@@ -14,7 +14,7 @@
 # engine. Prefer the smoke.sh, try.sh, and full.sh profile entry points.
 #
 # Run this script directly on an allocated compute node.  It executes all task
-# boundaries sequentially in the current 4-GPU allocation:
+# boundaries sequentially in the current GPU allocation:
 #   bash experiments/continual/run_sdpo_svc_cl.sh
 #
 # Useful overrides:
@@ -170,8 +170,12 @@ if [[ ! "$RAY_NUM_CPUS" =~ ^[1-9][0-9]*$ || ! "$TRAIN_NATIVE_THREADS" =~ ^[1-9][
     echo "RAY_NUM_CPUS and TRAIN_NATIVE_THREADS must be positive integers" >&2
     exit 2
 fi
-# This experiment uses one 4-GPU Slurm node.
-N_GPUS_PER_NODE=4
+# Match the trainer to the allocation, including two-GPU trial runs.
+N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-4}}"
+if [[ ! "$N_GPUS_PER_NODE" =~ ^[1-9][0-9]*$ ]]; then
+    echo "N_GPUS_PER_NODE must be a positive integer" >&2
+    exit 2
+fi
 NNODES=1
 TEST_FREQ="${TEST_FREQ:-100}"
 DISTILLATION_TOPK="${DISTILLATION_TOPK:-100}"
