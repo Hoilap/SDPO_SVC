@@ -14,6 +14,7 @@ RUNNER = ROOT / "experiments/continual/run_sdpo_svc_cl.sh"
 SMOKE_RUNNER = ROOT / "experiments/continual/smoke.sh"
 TRY_RUNNER = ROOT / "experiments/continual/try.sh"
 FULL_RUNNER = ROOT / "experiments/continual/full.sh"
+GRPO_TRY_RUNNER = ROOT / "experiments/continual/grpo_try.sh"
 
 
 class SmokeProfileTest(unittest.TestCase):
@@ -105,6 +106,30 @@ class SmokeProfileTest(unittest.TestCase):
             self.assertIn("data.train_max_samples=-1", command)
         for command in full_commands:
             self.assertIn("actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1", command)
+
+    def test_grpo_try_saves_before_final_only_validation(self):
+        commands = self.commands(runner=GRPO_TRY_RUNNER)
+        self.assertEqual(len(commands), 4)
+        self.assertIn("#SBATCH --time=0", GRPO_TRY_RUNNER.read_text())
+        for command in commands:
+            self.assertIn("baseline_grpo", command)
+            self.assertIn("data.train_max_samples=3000", command)
+            self.assertIn("data.shuffle=false", command)
+            self.assertIn("trainer.val_before_train=False", command)
+            self.assertIn("trainer.test_freq=1000000000", command)
+            self.assertIn("trainer.save_freq=1000000000", command)
+            self.assertIn("actor_rollout_ref.actor.checkpoint.async_save=False", command)
+            self.assertFalse(any("self_distillation" in arg for arg in command))
+
+        runner_text = (ROOT / "verl/trainer/ppo/ray_trainer.py").read_text()
+        save = runner_text.index("self._save_checkpoint()", runner_text.index("if self.config.trainer.save_freq > 0"))
+        validate = runner_text.index("val_metrics: dict = self._validate()", save)
+        self.assertLess(save, validate)
+
+        svc_commands = self.commands(
+            module="verl.model_merger.svc", runner=GRPO_TRY_RUNNER
+        )
+        self.assertEqual(svc_commands, [])
 
     def test_production_defaults_unchanged(self):
         commands = self.commands()

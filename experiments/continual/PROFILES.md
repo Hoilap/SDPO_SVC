@@ -9,6 +9,7 @@ checkpoint export, and SVC logic remain in one place.
 | `smoke.sh` | At most 128 candidates | 2 optimizer updates | `outputs/sdpo_svc_cl_smoke/<job-id>` |
 | `try.sh` | At most 3,000 candidates | Full one-epoch settings | `outputs/sdpo_svc_cl_try/<job-id>` |
 | `full.sh` | Manifest-defined full data | Full one-epoch settings | `outputs/sdpo_svc_cl` |
+| `grpo_try.sh` | At most 3,000 candidates | Full one-epoch GRPO settings | `outputs/grpo_cl_try/<job-id>` |
 
 All profiles use an actor PPO micro batch size of 1 per GPU.  Try and full keep
 their global and PPO mini batch sizes at 32, using gradient accumulation to
@@ -21,7 +22,15 @@ training command; the subsequent CPU SVC step keeps its normal parallelism.
 sbatch experiments/continual/smoke.sh
 sbatch experiments/continual/try.sh
 sbatch experiments/continual/full.sh
+sbatch experiments/continual/grpo_try.sh
 ```
+
+`grpo_try.sh` runs plain GRPO without self-distillation or SVC. Every stage
+selects the first 3,000 rows in file order before filtering overlong prompts,
+so at most 3,000 rows contribute training examples. It disables pre-training
+and periodic validation. At each task boundary the trainer saves the final
+FSDP checkpoint synchronously before final validation, then the runner exports
+that checkpoint to Hugging Face format for the next task.
 
 The 3,000-row try cap is applied independently to math, science, tool, and
 code before prompt-length filtering.  It never enlarges a smaller manifest

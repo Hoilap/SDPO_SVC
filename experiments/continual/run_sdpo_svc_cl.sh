@@ -10,8 +10,8 @@
 #SBATCH --output=logs/sdpo-svc-cl-%j.out
 #SBATCH --error=logs/sdpo-svc-cl-%j.err
 
-# Shared sequential SDPO + task-boundary Singular Value Calibration (SVC)
-# engine. Prefer the smoke.sh, try.sh, and full.sh profile entry points.
+# Shared sequential GRPO or SDPO + task-boundary Singular Value Calibration
+# (SVC) engine. Prefer the profile entry points in this directory.
 #
 # Run this script directly on an allocated compute node.  It executes all task
 # boundaries sequentially in the current GPU allocation:
@@ -95,14 +95,25 @@ fi
 # the curriculum; CURRENT_MODEL advances after every calibrated task boundary.
 # Profile entry points select data scale. Keep ``production`` as a backwards-
 # compatible alias for callers that predate full.sh.
+CONTINUAL_METHOD="${CONTINUAL_METHOD:-sdpo_svc}"
+case "$CONTINUAL_METHOD" in
+    grpo|sdpo_svc) ;;
+    *) echo "Unknown CONTINUAL_METHOD=$CONTINUAL_METHOD (expected grpo or sdpo_svc)" >&2; exit 2 ;;
+esac
+
 RUN_PROFILE="${RUN_PROFILE:-full}"
 case "$RUN_PROFILE" in
     full|production)
         PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-1}"
         ;;
     try)
-        CONFIG_NAME="${CONFIG_NAME:-sdpo}"
-        OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/sdpo_svc_cl_try/${SLURM_JOB_ID:-manual}}"
+        if [[ "$CONTINUAL_METHOD" == grpo ]]; then
+            CONFIG_NAME="${CONFIG_NAME:-baseline_grpo}"
+            OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/grpo_cl_try/${SLURM_JOB_ID:-manual}}"
+        else
+            CONFIG_NAME="${CONFIG_NAME:-sdpo}"
+            OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs/sdpo_svc_cl_try/${SLURM_JOB_ID:-manual}}"
+        fi
         TRAIN_SAMPLE_LIMIT="${TRAIN_SAMPLE_LIMIT:-3000}"
         PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-1}"
         ;;
@@ -162,8 +173,13 @@ LEARNING_RATE="${LEARNING_RATE:-1e-5}"
 LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-10}"
 # Applied on top of manifest limits, never enlarging the deduplicated math pool.
 TRAIN_SAMPLE_LIMIT="${TRAIN_SAMPLE_LIMIT:--1}"
+TRAIN_SHUFFLE_OVERRIDE="${TRAIN_SHUFFLE_OVERRIDE:-}"
 if [[ ! "$TRAIN_SAMPLE_LIMIT" =~ ^[1-9][0-9]*$ && "$TRAIN_SAMPLE_LIMIT" != -1 ]]; then
     echo "TRAIN_SAMPLE_LIMIT must be -1 or a positive integer" >&2
+    exit 2
+fi
+if [[ -n "$TRAIN_SHUFFLE_OVERRIDE" && ! "$TRAIN_SHUFFLE_OVERRIDE" =~ ^(true|false)$ ]]; then
+    echo "TRAIN_SHUFFLE_OVERRIDE must be empty, true, or false" >&2
     exit 2
 fi
 if [[ ! "$RAY_NUM_CPUS" =~ ^[1-9][0-9]*$ || ! "$TRAIN_NATIVE_THREADS" =~ ^[1-9][0-9]*$ ]]; then
@@ -178,6 +194,13 @@ if [[ ! "$N_GPUS_PER_NODE" =~ ^[1-9][0-9]*$ ]]; then
 fi
 NNODES=1
 TEST_FREQ="${TEST_FREQ:-100}"
+if [[ "$CONTINUAL_METHOD" == grpo && "$RUN_PROFILE" == try ]]; then
+    # A try stage has fewer than 100 optimizer steps today, but keep this
+    # explicit so validation cannot move ahead of the final checkpoint if the
+    # data cap or batch size changes later. The trainer always validates on the
+    # last step after synchronously saving it.
+    TEST_FREQ=1000000000
+fi
 DISTILLATION_TOPK="${DISTILLATION_TOPK:-100}"
 DISTILLATION_ALPHA="${DISTILLATION_ALPHA:-0.5}"
 TEACHER_UPDATE_RATE="${TEACHER_UPDATE_RATE:-0.05}"
@@ -531,7 +554,8 @@ find_latest_actor_checkpoint() {
 }
 
 echo "============================================================"
-echo "Sequential SDPO + SVC"
+echo "Sequential continual learning"
+echo "Method:            $CONTINUAL_METHOD"
 echo "Base anchor:       $BASE_MODEL"
 echo "Starting model:    $CURRENT_MODEL"
 echo "Profile:           $RUN_PROFILE"
@@ -540,7 +564,9 @@ echo "Output root:       $OUTPUT_ROOT"
 echo "Actor batch:       global=$TRAIN_BATCH_SIZE mini=$PPO_MINI_BATCH_SIZE micro-per-gpu=$PPO_MICRO_BATCH_SIZE_PER_GPU"
 echo "Rollout:           n=$ROLLOUT_BATCH_SIZE tp=$ROLLOUT_TENSOR_PARALLEL_SIZE"
 echo "Ray CPU/threading:  cpus=$RAY_NUM_CPUS native-threads=$TRAIN_NATIVE_THREADS"
-echo "SVC:               rank=$SVC_RANK alpha=$SVC_ALPHA strength=$SVC_STRENGTH devices=${SVC_DEVICES:-$SVC_DEVICE}"
+if [[ "$CONTINUAL_METHOD" == sdpo_svc ]]; then
+    echo "SVC:               rank=$SVC_RANK alpha=$SVC_ALPHA strength=$SVC_STRENGTH devices=${SVC_DEVICES:-$SVC_DEVICE}"
+fi
 echo "============================================================"
 
 for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
@@ -551,8 +577,15 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         train_max_samples="$TRAIN_SAMPLE_LIMIT"
     fi
     train_shuffle="${CL_TRAIN_SHUFFLE[$task_index]}"
+    if [[ -n "$TRAIN_SHUFFLE_OVERRIDE" ]]; then
+        train_shuffle="$TRAIN_SHUFFLE_OVERRIDE"
+    fi
     task_number="$(printf '%02d' "$((task_index + 1))")"
-    experiment_name="SDPO-SVC-CL-${task_number}-${dataset_name}"
+    if [[ "$CONTINUAL_METHOD" == grpo ]]; then
+        experiment_name="GRPO-CL-${task_number}-${dataset_name}"
+    else
+        experiment_name="SDPO-SVC-CL-${task_number}-${dataset_name}"
+    fi
     task_checkpoint_dir="$CHECKPOINT_ROOT/$experiment_name"
     task_eval_dir="$EVAL_RESULT_ROOT/$experiment_name"
     # Keep aggregate validation metrics without writing full sample dumps.
@@ -598,7 +631,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
     val_files_override="$(hydra_list "${VAL_FILES[@]}")"
 
     if [[ "$DRY_RUN" != true && "$PREFLIGHT_ONLY" != true \
-          && ( -e "$raw_hf_dir" || -e "$calibrated_hf_dir" ) ]]; then
+          && ( -e "$raw_hf_dir" || ( "$CONTINUAL_METHOD" == sdpo_svc && -e "$calibrated_hf_dir" ) ) ]]; then
         echo "Refusing to overwrite an existing HF output for task $task_number:" >&2
         echo "  $raw_hf_dir" >&2
         echo "  $calibrated_hf_dir" >&2
@@ -637,12 +670,6 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "data.val_batch_size=$VAL_BATCH_SIZE"
         "data.filter_overlong_prompts_workers=$FILTER_OVERLONG_PROMPTS_WORKERS"
         "actor_rollout_ref.model.path=$CURRENT_MODEL"
-        "actor_rollout_ref.actor.self_distillation.teacher_path=$CURRENT_MODEL"
-        "actor_rollout_ref.actor.self_distillation.teacher_init_alpha=1.0"
-        "actor_rollout_ref.actor.self_distillation.teacher_update_rate=$TEACHER_UPDATE_RATE"
-        "actor_rollout_ref.actor.self_distillation.distillation_topk=$DISTILLATION_TOPK"
-        "actor_rollout_ref.actor.self_distillation.alpha=$DISTILLATION_ALPHA"
-        "actor_rollout_ref.actor.self_distillation.dont_reprompt_on_self_success=True"
         "actor_rollout_ref.actor.optim.lr=$LEARNING_RATE"
         "actor_rollout_ref.actor.optim.lr_warmup_steps=$LR_WARMUP_STEPS"
         "actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH_SIZE"
@@ -660,6 +687,7 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "trainer.resume_mode=disable"
         "trainer.total_epochs=$TOTAL_EPOCHS"
         "trainer.total_training_steps=$TOTAL_TRAINING_STEPS"
+        "trainer.val_before_train=False"
         "trainer.val_reward_num_examine=$VAL_REWARD_NUM_EXAMINE"
         "trainer.validation_data_dir=$task_eval_dir"
         "trainer.validation_dump_generations=$validation_dump_generations"
@@ -669,9 +697,20 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         "trainer.n_gpus_per_node=$N_GPUS_PER_NODE"
         "trainer.nnodes=$NNODES"
         "actor_rollout_ref.actor.checkpoint.save_contents=['model','extra']"
+        "actor_rollout_ref.actor.checkpoint.async_save=False"
         "actor_rollout_ref.actor.checkpoint.load_contents=['model','extra']"
         "custom_reward_function.path=$PROJECT_ROOT/verl/utils/reward_score/feedback/__init__.py"
     )
+    if [[ "$CONTINUAL_METHOD" == sdpo_svc ]]; then
+        train_cmd+=(
+            "actor_rollout_ref.actor.self_distillation.teacher_path=$CURRENT_MODEL"
+            "actor_rollout_ref.actor.self_distillation.teacher_init_alpha=1.0"
+            "actor_rollout_ref.actor.self_distillation.teacher_update_rate=$TEACHER_UPDATE_RATE"
+            "actor_rollout_ref.actor.self_distillation.distillation_topk=$DISTILLATION_TOPK"
+            "actor_rollout_ref.actor.self_distillation.alpha=$DISTILLATION_ALPHA"
+            "actor_rollout_ref.actor.self_distillation.dont_reprompt_on_self_success=True"
+        )
+    fi
     # Scope native-library limits to Ray training workers. In particular, do
     # not pass them to the CPU SVC step below.
     (
@@ -698,22 +737,25 @@ for ((task_index = START_TASK; task_index <= END_TASK; task_index++)); do
         --local_dir "$actor_checkpoint" \
         --target_dir "$raw_hf_dir"
 
-    echo "[$task_number/${#CL_TRAIN_DATASETS[@]}] Applying task-boundary SVC"
-    run_command python3 -m verl.model_merger.svc \
-        --base-model "$BASE_MODEL" \
-        --previous-model "$CURRENT_MODEL" \
-        --raw-model "$raw_hf_dir" \
-        --output-dir "$calibrated_hf_dir" \
-        --rank "$SVC_RANK" \
-        --oversample "$SVC_OVERSAMPLE" \
-        --niter "$SVC_NITER" \
-        --alpha "$SVC_ALPHA" \
-        --strength "$SVC_STRENGTH" \
-        "${svc_device_args[@]}" \
-        --seed "$SVC_SEED" \
-        --cache-dir "$HF_CACHE_DIR"
-
-    CURRENT_MODEL="$calibrated_hf_dir"
+    if [[ "$CONTINUAL_METHOD" == sdpo_svc ]]; then
+        echo "[$task_number/${#CL_TRAIN_DATASETS[@]}] Applying task-boundary SVC"
+        run_command python3 -m verl.model_merger.svc \
+            --base-model "$BASE_MODEL" \
+            --previous-model "$CURRENT_MODEL" \
+            --raw-model "$raw_hf_dir" \
+            --output-dir "$calibrated_hf_dir" \
+            --rank "$SVC_RANK" \
+            --oversample "$SVC_OVERSAMPLE" \
+            --niter "$SVC_NITER" \
+            --alpha "$SVC_ALPHA" \
+            --strength "$SVC_STRENGTH" \
+            "${svc_device_args[@]}" \
+            --seed "$SVC_SEED" \
+            --cache-dir "$HF_CACHE_DIR"
+        CURRENT_MODEL="$calibrated_hf_dir"
+    else
+        CURRENT_MODEL="$raw_hf_dir"
+    fi
     echo "[$task_number/${#CL_TRAIN_DATASETS[@]}] Boundary complete: $CURRENT_MODEL"
 done
 
