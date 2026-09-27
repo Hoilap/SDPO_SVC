@@ -1,5 +1,7 @@
 # verl documentations
 
+Research progress and validation investigations: [research_progress](research_progress/README.md).
+
 ## Build the docs
 
 ```bash

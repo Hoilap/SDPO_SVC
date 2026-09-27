@@ -2,6 +2,8 @@
 
 Scientific design: [PLAN.md](PLAN.md).
 
+Progress reports and validation investigations: [research progress](../../docs/research_progress/README.md).
+
 The runner enforces `data.train_max_samples <= 3000` for both Math and Science.
 The default is one paired seed (`SEED=42`) and no SVC.
 
@@ -63,6 +65,36 @@ the command for building the final summary after the last evaluation finishes.
 
 Useful safe overrides include `BASE_MODEL`, `SEED`, `TRAIN_SAMPLE_LIMIT`
 (values above 3000 are rejected), `TAIL_DEVICE`, and `WANDB_MODE`.
+
+## Resume completed training or evaluation
+
+If training saved a complete FSDP checkpoint before validation failed, export
+that checkpoint without retraining:
+
+```bash
+sbatch experiments/causal/merge_saved_checkpoint.sh \
+  "$OUTPUT_ROOT/checkpoints/tail-seed1-SDPO-Math/global_step_93/actor" \
+  "$OUTPUT_ROOT/math_hf/sdpo_full"
+```
+
+Use absolute paths. The merge checks all model shards, validates that the
+exported model and tokenizer load on CPU, and refuses to overwrite an existing
+target. Failed merges retain their staging directory for inspection.
+
+For evaluation interrupted between arms, reuse the same output root and
+configuration:
+
+```bash
+sbatch --export=ALL,OUTPUT_ROOT="$OUTPUT_ROOT",SKIP_COMPLETED_EVAL=1 \
+  experiments/causal/run.sh eval-math
+```
+
+Completed arms are skipped after validating their metric JSON. An incomplete
+arm restarts from its first validation batch. Existing metrics do not record a
+configuration fingerprint, so do not enable skipping after changing the model,
+datasets or evaluation settings. `run.sh` requests unlimited walltime (`--time=0`),
+subject to cluster limits. Previously submitted jobs retain their submitted
+time limits and dependencies until explicitly updated in Slurm.
 
 ## Outputs
 

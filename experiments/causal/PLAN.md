@@ -1,6 +1,6 @@
 # GRPO Tail Directions 是否导致其比 SDPO 更具泛化性
 
-状态：**首轮代码已实现，尚未启动实验**。运行方式见 [README.md](README.md)。
+状态：**首轮单 seed 实验已启动**。阶段进度和验证排查见[研究记录](../../docs/research_progress/README.md)，运行方式见 [README.md](README.md)。
 
 核心问题：
 
