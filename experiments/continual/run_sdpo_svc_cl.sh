@@ -163,9 +163,6 @@ export CODE_REWARD_MAX_CONCURRENCY=8
 VAL_REWARD_NUM_EXAMINE="${VAL_REWARD_NUM_EXAMINE:-0}"
 FILTER_OVERLONG_PROMPTS_WORKERS="${FILTER_OVERLONG_PROMPTS_WORKERS:-4}"
 AGENT_LOOP_WORKERS="${AGENT_LOOP_WORKERS:-4}"
-# Ray eagerly starts one worker per advertised CPU. Keep enough headroom below
-# the Slurm allocation for Ray's agents and their gRPC threads.
-RAY_NUM_CPUS="${RAY_NUM_CPUS:-12}"
 # Limit native thread pools only while training. CPU SVC runs outside the
 # training subshell and retains its normal parallelism.
 TRAIN_NATIVE_THREADS="${TRAIN_NATIVE_THREADS:-2}"
@@ -182,14 +179,27 @@ if [[ -n "$TRAIN_SHUFFLE_OVERRIDE" && ! "$TRAIN_SHUFFLE_OVERRIDE" =~ ^(true|fals
     echo "TRAIN_SHUFFLE_OVERRIDE must be empty, true, or false" >&2
     exit 2
 fi
-if [[ ! "$RAY_NUM_CPUS" =~ ^[1-9][0-9]*$ || ! "$TRAIN_NATIVE_THREADS" =~ ^[1-9][0-9]*$ ]]; then
-    echo "RAY_NUM_CPUS and TRAIN_NATIVE_THREADS must be positive integers" >&2
+if [[ ! "$TRAIN_NATIVE_THREADS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "TRAIN_NATIVE_THREADS must be a positive integer" >&2
     exit 2
 fi
 # Match the trainer to the allocation, including two-GPU trial runs.
 N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-4}}"
 if [[ ! "$N_GPUS_PER_NODE" =~ ^[1-9][0-9]*$ ]]; then
     echo "N_GPUS_PER_NODE must be a positive integer" >&2
+    exit 2
+fi
+# Each GPU placement bundle reserves three CPUs and the TaskRunner actor
+# reserves one more. Advertising fewer CPUs leaves the STRICT_PACK placement
+# group permanently infeasible even when every GPU is idle.
+MIN_RAY_NUM_CPUS=$((3 * N_GPUS_PER_NODE + 1))
+RAY_NUM_CPUS="${RAY_NUM_CPUS:-$MIN_RAY_NUM_CPUS}"
+if [[ ! "$RAY_NUM_CPUS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "RAY_NUM_CPUS must be a positive integer" >&2
+    exit 2
+fi
+if (( RAY_NUM_CPUS < MIN_RAY_NUM_CPUS )); then
+    echo "RAY_NUM_CPUS=$RAY_NUM_CPUS is insufficient for $N_GPUS_PER_NODE GPU(s); need at least $MIN_RAY_NUM_CPUS (3 per GPU plus TaskRunner)" >&2
     exit 2
 fi
 NNODES=1

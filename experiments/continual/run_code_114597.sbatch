@@ -11,9 +11,10 @@
 #SBATCH --error=logs/code-from-114597-%j.err
 # Resume only Code from 114597's completed Tool-SVC boundary. Submit from the
 # repository root; outputs are isolated by the new job ID. Resource samples
-# live in /tmp/code-from-114597-<jobid>/monitor/resources.jsonl and are mirrored
-# to outputs/code_from_114597/<jobid>/diagnostics/ every minute. SIGKILL or a
-# failed shared filesystem may leave only the node-local copy.
+# live in /tmp/code-from-114597-<jobid>/monitor/resources.jsonl. A bounded
+# recent window is mirrored to outputs/code_from_114597/<jobid>/diagnostics/
+# every minute; SIGKILL or a failed shared filesystem may leave the complete
+# history only in the node-local copy.
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:?Submit from the repository root}"
 export PROJECT_ROOT="$PWD"
@@ -31,6 +32,11 @@ unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
 export RAY_TMPDIR="/tmp/code-from-114597-$SLURM_JOB_ID"
 monitor_dir="$RAY_TMPDIR/monitor"
 archive="$OUTPUT_ROOT/diagnostics"
+archive_lines="${MONITOR_ARCHIVE_LINES:-1000}"
+if [[ ! "$archive_lines" =~ ^[1-9][0-9]*$ ]]; then
+    echo "MONITOR_ARCHIVE_LINES must be a positive integer" >&2
+    exit 2
+fi
 mkdir -p "$monitor_dir" "$archive"
 python - "$INITIAL_CONTINUAL_MODEL" <<'PY'
 import json
@@ -53,12 +59,20 @@ git rev-parse HEAD
 hostname
 python experiments/continual/monitor_resources.py --interval 5 --output "$monitor_dir/resources.jsonl" &
 monitor_pid=$!
-# Archive independently; a slow shared filesystem must not block the sampler.
+# Archive a bounded recent window independently; a slow shared filesystem must
+# not block the sampler, and the shared filesystem must not receive the entire
+# growing history again every minute.
+archive_resources() {
+    if [[ -f "$monitor_dir/resources.jsonl" ]]; then
+        timeout 15 tail -n "$archive_lines" "$monitor_dir/resources.jsonl" \
+            > "$archive/resources.recent.jsonl.tmp" \
+            && mv "$archive/resources.recent.jsonl.tmp" "$archive/resources.recent.jsonl" \
+            || true
+    fi
+}
 (
     while true; do
-        if [[ -f "$monitor_dir/resources.jsonl" ]]; then
-            timeout 15 cp "$monitor_dir/resources.jsonl" "$archive/resources.jsonl" || true
-        fi
+        archive_resources
         sleep 60
     done
 ) &
@@ -72,7 +86,7 @@ cleanup() {
     fi
     kill "$archive_pid" "$monitor_pid" 2>/dev/null || true
     wait "$monitor_pid" 2>/dev/null || true
-    timeout 30 cp "$monitor_dir/resources.jsonl" "$archive/resources.jsonl" || true
+    archive_resources
     for session in "$RAY_TMPDIR"/ray/session_*; do
         [[ -d "$session/logs" && ! -L "$session" ]] || continue
         timeout 60 cp -r "$session/logs" "$archive/$(basename "$session")-logs" || true

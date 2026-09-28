@@ -58,7 +58,7 @@ class SmokeProfileTest(unittest.TestCase):
         self.assertEqual(len(commands), 4)
         self.assertIn("#SBATCH --cpus-per-task=24", RUNNER.read_text())
         for command in commands:
-            self.assertIn("ray_kwargs.ray_init.num_cpus=12", command)
+            self.assertIn("ray_kwargs.ray_init.num_cpus=13", command)
             for value in (
                 "sdpo_smoke",
                 "data.train_batch_size=8",
@@ -72,13 +72,19 @@ class SmokeProfileTest(unittest.TestCase):
                 self.assertIn(value, command)
 
     def test_ray_cpu_count_is_independently_overridable(self):
-        commands = self.commands(RUN_PROFILE="smoke", RAY_NUM_CPUS="8")
+        commands = self.commands(RUN_PROFILE="smoke", RAY_NUM_CPUS="16")
         for command in commands:
-            self.assertIn("ray_kwargs.ray_init.num_cpus=8", command)
+            self.assertIn("ray_kwargs.ray_init.num_cpus=16", command)
+
+    def test_ray_cpu_count_rejects_infeasible_placement_group(self):
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            self.commands(RUN_PROFILE="smoke", RAY_NUM_CPUS="12")
+        self.assertIn("need at least 13", raised.exception.stderr)
 
     def test_gpu_count_follows_allocation(self):
         for command in self.commands(RUN_PROFILE="smoke", SLURM_GPUS_ON_NODE="2"):
             self.assertIn("trainer.n_gpus_per_node=2", command)
+            self.assertIn("ray_kwargs.ray_init.num_cpus=7", command)
 
     def test_explicit_gpu_count_overrides_default(self):
         for command in self.commands(RUN_PROFILE="smoke", N_GPUS_PER_NODE="2"):
