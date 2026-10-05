@@ -353,6 +353,8 @@ data:
   val_files: ~/data/rlhf/gsm8k/test.parquet
   train_max_samples: -1
   val_max_samples: -1
+  training_val_fraction: 0.1
+  training_val_seed: 42
   prompt_key: prompt
   reward_fn_key: data_source
   max_prompt_length: 512

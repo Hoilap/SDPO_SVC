@@ -34,7 +34,7 @@ import numpy as np
 import ray
 import torch
 from omegaconf import OmegaConf, open_dict
-from torch.utils.data import Dataset, Sampler
+from torch.utils.data import Dataset, Sampler, Subset
 from torchdata.stateful_dataloader import StatefulDataLoader
 from tqdm import tqdm
 
@@ -55,6 +55,7 @@ from verl.trainer.ppo.metric_utils import (
 )
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.trainer.ppo.utils import Role, WorkerType, need_critic, need_reference_policy, need_reward_model
+from verl.trainer.ppo.validation_subset import should_validate
 from verl.utils import tensordict_utils as tu
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path, should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
@@ -398,6 +399,26 @@ class RayPPOTrainer:
                 self.processor,
                 max_samples=self.config.data.get("val_max_samples", -1),
             )
+        # Use the same small validation subset at every training checkpoint and
+        # across arms. Standalone val_only evaluation keeps the full dataset.
+        if not self.config.trainer.get("val_only", False):
+            from verl.trainer.ppo.validation_subset import validation_indices
+
+            source_key = self.config.data.get("reward_fn_key", "data_source")
+            dataframe = getattr(val_dataset, "dataframe", None)
+            if dataframe is not None and source_key in dataframe.column_names:
+                sources = list(dataframe[source_key])
+            else:
+                # Custom datasets may not expose an Arrow table. Avoid fetching
+                # and tokenizing every example solely to inspect its source.
+                sources = ["validation"] * len(val_dataset)
+            indices = validation_indices(
+                sources,
+                fraction=self.config.data.get("training_val_fraction", 0.1),
+                seed=self.config.data.get("training_val_seed", 42),
+            )
+            print(f"Training validation subset: {len(indices)}/{len(val_dataset)} samples")
+            val_dataset = Subset(val_dataset, indices)
         self.train_dataset, self.val_dataset = train_dataset, val_dataset
 
         if train_sampler is None:
@@ -1917,8 +1938,12 @@ class RayPPOTrainer:
                 # be lengthy or fail while generating/scoring evaluation samples.
                 if (
                     self.val_reward_fn is not None
-                    and self.config.trainer.test_freq > 0
-                    and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
+                    and should_validate(
+                        self.global_steps,
+                        self.total_training_steps,
+                        self.config.trainer.test_freq,
+                        self.config.trainer.get("test_skip_last_interval", False),
+                    )
                 ):
                     with marked_timer("testing", timing_raw, color="green"):
                         val_metrics: dict = self._validate()

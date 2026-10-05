@@ -167,7 +167,7 @@ train_model() {
         test_freq=1000000000
     else
         shuffle=true
-        val_before=True
+        val_before=False
         test_freq="$SCIENCE_EVAL_FREQ"
     fi
     checkpoint_dir="$CHECKPOINT_ROOT/$run_name"
@@ -202,6 +202,7 @@ train_model() {
         "trainer.default_local_dir=$checkpoint_dir" "trainer.resume_mode=disable"
         "trainer.total_epochs=$TOTAL_EPOCHS" "trainer.val_before_train=$val_before"
         "trainer.test_freq=$test_freq" "trainer.validation_data_dir=$validation_dir"
+        "+trainer.test_skip_last_interval=True"
         "trainer.validation_dump_generations=False"
         "trainer.save_freq=1000000000"
         "trainer.max_actor_ckpt_to_keep=1" "trainer.n_gpus_per_node=4" "trainer.nnodes=1"

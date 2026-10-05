@@ -23,6 +23,12 @@ train_max_samples: -1
 # select the specified number of samples from val dataset
 val_max_samples: -1
 
+# Fixed per-source subset for all in-training validation (including initial/final).
+# Applied after val_max_samples and prompt filtering; val_only evaluation bypasses it.
+# Round up per source so small test sets remain represented.
+training_val_fraction: 0.1
+training_val_seed: 42
+
 # The field in the dataset where the prompt is located. Default is 'prompt'.
 prompt_key: prompt
 

@@ -7,6 +7,17 @@ Progress reports and validation investigations: [research progress](../../docs/r
 The runner enforces `data.train_max_samples <= 3000` for both Math and Science.
 The default is one paired seed (`SEED=42`) and no SVC.
 
+In-training validation (periodic and final) uses a fixed 10%
+subset of each `data_source`, rounded up, with sampling seed 42. Sampling occurs
+after sample limits and prompt filtering, and the same subset is reused across
+steps and arms. Custom datasets without source metadata use a global 10% subset.
+Standalone `eval-math` and `eval-science` (`trainer.val_only=True`) retain the full
+configured test set. Subset metrics must not be compared directly with older
+full-test metrics. Already running Python processes retain their previous behavior.
+The causal training runner disables step-0 validation and skips periodic checks
+less than one validation interval before the final step. For 93 steps with an
+interval of 23, validation runs at steps 23, 46, 69, and 93 (not 92).
+
 ## Preflight
 
 ```bash
