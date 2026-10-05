@@ -867,6 +867,9 @@ class RayPPOTrainer:
         return gen_batch
 
     def _validate(self, merged: bool = False):
+        validation_rollouts = self.config.actor_rollout_ref.rollout.val_kwargs.n
+        if not self.config.trainer.get("val_only", False):
+            validation_rollouts = min(validation_rollouts, 8)
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
 
@@ -888,7 +891,7 @@ class RayPPOTrainer:
 
             # repeat test batch
             test_batch = test_batch.repeat(
-                repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True
+                repeat_times=validation_rollouts, interleave=True
             )
 
             # we only do validation on rule-based rm

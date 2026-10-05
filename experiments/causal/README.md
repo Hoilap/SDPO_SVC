@@ -17,6 +17,9 @@ full-test metrics. Already running Python processes retain their previous behavi
 The causal training runner disables step-0 validation and skips periodic checks
 less than one validation interval before the final step. For 93 steps with an
 interval of 23, validation runs at steps 23, 46, 69, and 93 (not 92).
+Training validation generates 8 responses per prompt (metrics up to @8).
+The trainer also caps in-training validation at 8 for previously queued script
+snapshots. Standalone evaluation retains `VAL_ROLLOUT_BATCH_SIZE` (default 16).
 
 ## Preflight
 

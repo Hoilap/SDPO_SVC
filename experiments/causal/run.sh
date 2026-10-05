@@ -195,7 +195,7 @@ train_model() {
         "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_SIZE_PER_GPU"
         "actor_rollout_ref.rollout.n=$ROLLOUT_BATCH_SIZE"
         "actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TENSOR_PARALLEL_SIZE"
-        "actor_rollout_ref.rollout.val_kwargs.n=$VAL_ROLLOUT_BATCH_SIZE"
+        "actor_rollout_ref.rollout.val_kwargs.n=8"
         "algorithm.rollout_correction.rollout_is=token"
         "trainer.project_name=$WANDB_PROJECT" "trainer.group_name=tail-causal-seed1"
         "trainer.experiment_name=$run_name" "trainer.logger=['console','wandb']"
