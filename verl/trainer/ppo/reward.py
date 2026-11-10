@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import inspect
 import multiprocessing
+import time
+from collections import defaultdict
 import warnings
 from functools import partial
 from typing import TYPE_CHECKING, Any, Optional, cast
@@ -214,3 +216,51 @@ def compute_reward_async(data: DataProto, config=None, tokenizer=None, reward_fn
         )
 
     return compute_reward(data, reward_fn)
+
+
+@ray.remote(num_cpus=3)
+def compute_validation_reward_timed(data, reward_fn):
+    """Reserve a controller CPU plus two bounded code-test subprocess CPUs."""
+    started = time.time()
+    scores, extras = compute_reward(data, reward_fn)
+    return scores, extras, (started, time.time())
+
+
+def score_validation_batch(data, reward_fn, num_workers=2):
+    """Score a batch on bounded CPU workers, preserving sample order.
+
+    Three Ray CPUs per task account for the controller and at most two test
+    children. This path requires CODE_REWARD_MAX_CONCURRENCY <= 2.
+    """
+    import os
+
+    if isinstance(num_workers, bool) or not isinstance(num_workers, int) or num_workers < 1:
+        raise ValueError("validation_reward_num_workers must be a positive integer")
+    if not len(data):
+        raise ValueError("Cannot score an empty validation batch")
+    if int(os.environ.get("CODE_REWARD_MAX_CONCURRENCY", "2")) not in (1, 2):
+        raise ValueError("Validation pipeline requires CODE_REWARD_MAX_CONCURRENCY=1 or 2")
+    task = compute_validation_reward_timed.options(runtime_env={"env_vars": {
+        "CODE_REWARD_MAX_CONCURRENCY": os.environ.get("CODE_REWARD_MAX_CONCURRENCY", "2"),
+        **{name: "1" for name in (
+            "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"
+        )},
+    }})
+    split_size = (len(data) + num_workers - 1) // num_workers
+    futures = []
+    try:
+        for chunk in data.split(split_size):
+            futures.append(task.remote(data=chunk, reward_fn=reward_fn))
+        results = ray.get(futures)
+    except BaseException:
+        for future in futures:
+            ray.cancel(future)
+        raise
+    extras = defaultdict(list)
+    for _, info, _ in results:
+        for key, values in info.items():
+            extras[key].extend(values)
+    return {
+        "reward_tensor": torch.cat([scores for scores, _, _ in results], dim=0),
+        "reward_extra_info": dict(extras),
+    }, [interval for _, _, interval in results]

@@ -56,6 +56,8 @@ from verl.trainer.ppo.metric_utils import (
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.trainer.ppo.utils import Role, WorkerType, need_critic, need_reference_policy, need_reward_model
 from verl.trainer.ppo.validation_subset import should_validate
+from verl.trainer.ppo.validation_pipeline import ValidationPipeline
+from verl.trainer.ppo.reward import score_validation_batch
 from verl.utils import tensordict_utils as tu
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path, should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
@@ -506,7 +508,7 @@ class RayPPOTrainer:
 
         print(f"Dumped generations to {filename}")
 
-    def _dump_validation_metrics(self, metrics, num_samples, dump_path):
+    def _dump_validation_metrics(self, metrics, num_samples, dump_path, evaluation_metadata=None):
         """Dump aggregate validation metrics next to the sample generations."""
         os.makedirs(dump_path, exist_ok=True)
         filename = os.path.join(dump_path, f"{self.global_steps}.metrics.json")
@@ -525,6 +527,7 @@ class RayPPOTrainer:
             "num_samples": num_samples,
             "metrics": metrics,
         }
+        payload.update(evaluation_metadata or {})
         with open(filename, "w") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True, default=json_default)
             f.write("\n")
@@ -866,21 +869,7 @@ class RayPPOTrainer:
 
         return gen_batch
 
-    def _validate(self, merged: bool = False):
-        validation_rollouts = self.config.actor_rollout_ref.rollout.val_kwargs.n
-        if not self.config.trainer.get("val_only", False):
-            validation_rollouts = min(validation_rollouts, 8)
-        data_source_lst = []
-        reward_extra_infos_dict: dict[str, list] = defaultdict(list)
-
-        # Lists to collect samples for the table
-        sample_inputs = []
-        sample_outputs = []
-        sample_gts = []
-        sample_scores = []
-        sample_turns = []
-        sample_uids = []
-
+    def _generate_validation_batches(self, validation_rollouts, pipeline):
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
 
@@ -896,12 +885,7 @@ class RayPPOTrainer:
 
             # we only do validation on rule-based rm
             if self.config.reward_model.enable and test_batch[0].non_tensor_batch["reward_model"]["style"] == "model":
-                return {}
-
-            ground_truths = [
-                item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None) for item in test_batch
-            ]
-            sample_gts.extend(ground_truths)
+                return
 
             test_gen_batch = self._get_gen_batch(test_batch)
             test_gen_batch.meta_info = {
@@ -921,53 +905,105 @@ class RayPPOTrainer:
                 else self.config.actor_rollout_ref.rollout.agent.num_workers
             )
             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, size_divisor)
+            rollout_started = time.time()
             if not self.async_rollout_mode:
                 test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
             else:
                 test_output_gen_batch_padded = self.async_rollout_manager.generate_sequences(test_gen_batch_padded)
+
+            pipeline.record_rollout(rollout_started, time.time())
 
             # unpad
             test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
 
             print("validation generation end")
 
-            # Store generated outputs
-            output_ids = test_output_gen_batch.batch["responses"]
-            output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
-            sample_outputs.extend(output_texts)
-
             test_batch = test_batch.union(test_output_gen_batch)
             test_batch.meta_info["validate"] = True
+            yield test_batch
 
-            # Store original inputs
-            input_ids = test_batch.batch["prompts"]
-            # TODO: Can we keep special tokens except for padding tokens?
-            input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
-            sample_inputs.extend(input_texts)
-            sample_uids.extend(test_batch.non_tensor_batch["uid"])
+    def _validate(self, merged: bool = False):
+        validation_rollouts = self.config.actor_rollout_ref.rollout.val_kwargs.n
+        if not self.config.trainer.get("val_only", False):
+            validation_rollouts = min(validation_rollouts, 8)
+        data_source_lst = []
+        reward_extra_infos_dict: dict[str, list] = defaultdict(list)
 
-            # evaluate using reward_function
-            result = self._compute_or_extract_reward(test_batch, reward_fn=self.val_reward_fn, return_dict=True)
-            reward_tensor = result["reward_tensor"]
-            scores = reward_tensor.sum(-1).cpu().tolist()
-            sample_scores.extend(scores)
+        # Lists to collect samples for the table
+        sample_inputs = []
+        sample_outputs = []
+        sample_gts = []
+        sample_scores = []
+        sample_turns = []
+        sample_uids = []
 
-            reward_extra_infos_dict["reward"].extend(scores)
-            reward_extra_info = result.get("reward_extra_info", {})
-            for key, values in reward_extra_info.items():
-                if key not in reward_extra_infos_dict:
-                    reward_extra_infos_dict[key] = []
-                if isinstance(values, np.ndarray):
-                    reward_extra_infos_dict[key].extend(values.tolist())
-                else:
-                    reward_extra_infos_dict[key].extend(values if isinstance(values, list) else [values])
+        pipeline_enabled = self.config.trainer.get("validation_pipeline", False)
+        if pipeline_enabled and (self.config.reward_model.enable or self.config.reward_model.use_reward_loop):
+            raise ValueError("Validation pipeline requires rule-based rewards with use_reward_loop=False")
+        pipeline = ValidationPipeline(enabled=pipeline_enabled, max_pending=2)
+        scoring_workers = self.config.trainer.get("validation_reward_num_workers", 2)
 
-            # collect num_turns of each prompt
-            if "__num_turns__" in test_batch.non_tensor_batch:
-                sample_turns.append(test_batch.non_tensor_batch["__num_turns__"])
+        def score_batch(batch):
+            if pipeline_enabled and "rm_scores" not in batch.batch:
+                return score_validation_batch(batch, self.val_reward_fn, scoring_workers)
+            started = time.time()
+            result = self._compute_or_extract_reward(batch, reward_fn=self.val_reward_fn, return_dict=True)
+            return result, [(started, time.time())]
 
-            data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
+        print("EVAL_PIPELINE_CONFIG " + json.dumps({
+            "enabled": pipeline_enabled, "max_pending_batches": 2,
+            "cpu_scoring_workers": scoring_workers if pipeline_enabled else 0,
+            "ray_cpus_per_scoring_worker": 3 if pipeline_enabled else 0,
+            "code_tests_per_answer": os.environ.get("CODE_REWARD_MAX_CONCURRENCY", "default"),
+            "rollout_agent_workers": self.config.actor_rollout_ref.rollout.agent.num_workers,
+        }), flush=True)
+        batches = self._generate_validation_batches(validation_rollouts, pipeline)
+        results = pipeline.run(batches, score_batch)
+        try:
+            for test_batch, result in results:
+                sample_gts.extend([
+                    item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None) for item in test_batch
+                ])
+                # Store generated outputs
+                output_ids = test_batch.batch["responses"]
+                output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
+                sample_outputs.extend(output_texts)
 
+                # Store original inputs
+                input_ids = test_batch.batch["prompts"]
+                # TODO: Can we keep special tokens except for padding tokens?
+                input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
+                sample_inputs.extend(input_texts)
+                sample_uids.extend(test_batch.non_tensor_batch["uid"])
+
+                # evaluate using reward_function
+                reward_tensor = result["reward_tensor"]
+                scores = reward_tensor.sum(-1).cpu().tolist()
+                sample_scores.extend(scores)
+
+                reward_extra_infos_dict["reward"].extend(scores)
+                reward_extra_info = result.get("reward_extra_info", {})
+                for key, values in reward_extra_info.items():
+                    if key not in reward_extra_infos_dict:
+                        reward_extra_infos_dict[key] = []
+                    if isinstance(values, np.ndarray):
+                        reward_extra_infos_dict[key].extend(values.tolist())
+                    else:
+                        reward_extra_infos_dict[key].extend(values if isinstance(values, list) else [values])
+
+                # collect num_turns of each prompt
+                if "__num_turns__" in test_batch.non_tensor_batch:
+                    sample_turns.append(test_batch.non_tensor_batch["__num_turns__"])
+
+                data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
+
+        finally:
+            results.close()
+        pipeline_timing = pipeline.summary()
+        print("EVAL_PIPELINE_SUMMARY " + json.dumps(pipeline_timing), flush=True)
+
+        if not sample_scores:
+            return {}
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
         data_sources = np.concatenate(data_source_lst, axis=0)
@@ -1000,8 +1036,11 @@ class RayPPOTrainer:
                 "reward_extra_infos_dict": reward_extra_infos_dict,
             }
         metrics = self._val_metrics_update(data_sources, sample_uids, reward_extra_infos_dict, sample_turns)
+        metrics.update({"val-timing/" + key: value for key, value in pipeline_timing.items()})
         if val_data_dir:
-            self._dump_validation_metrics(metrics, len(sample_scores), val_data_dir)
+            self._dump_validation_metrics(metrics, len(sample_scores), val_data_dir, {
+                "pipeline_timing": pipeline_timing,
+            })
         return metrics
 
     def _val_metrics_update(self, data_sources, sample_uids, reward_extra_infos_dict, sample_turns):
